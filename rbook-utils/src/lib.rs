@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use rbook::ebook::manifest::{Manifest, ManifestEntry};
+use rbook::ebook::manifest::Manifest;
 use rbook::ebook::spine::Spine;
 use rbook::ebook::toc::{Toc, TocChildren, TocEntry};
-use rbook::ebook::element::Href;
 use rbook::{Ebook, Epub};
+use rbook::prelude::{MetaEntry, Metadata, SpineEntry};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -55,7 +55,6 @@ struct TocEntryInfo {
 #[derive(Clone, Debug)]
 struct ContentDoc {
     href_path: String,
-    html: String,
     document: NodeRef,
 }
 
@@ -147,12 +146,30 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
     if options.media_all {
         for image in epub.manifest().images() {
             let href = image.href().as_str().to_string();
-            extract_image(&epub, &href, &image_root, &book_slug, &mut extracted_images, &mut extracted_count)
-                .ok();
+            let _ = extract_image(
+                &epub,
+                &href,
+                &image_root,
+                &book_slug,
+                &mut extracted_images,
+                &mut extracted_count,
+            );
         }
     }
 
     let mut content_cache: HashMap<String, ContentDoc> = HashMap::new();
+
+    let mut image_resolver = |src: &str, base_href: &str| -> Option<String> {
+        resolve_and_extract_image(
+            &epub,
+            src,
+            base_href,
+            &image_root,
+            &book_slug,
+            &mut extracted_images,
+            &mut extracted_count,
+        )
+    };
 
     let toc_entries = build_toc_entries(&epub)?;
     let mut sections: Vec<(String, String)> = Vec::new();
@@ -180,22 +197,20 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
                 collect_css(content, &entry.href_path, &mut css_hrefs, &mut inline_styles);
             }
             let allow_body = href_counts.get(&entry.href_path).copied().unwrap_or(0) == 1;
-            let image_resolver = |src: &str| -> Option<String> {
-                resolve_and_extract_image(
-                    &epub,
-                    src,
-                    &entry.href_path,
-                    &image_root,
-                    &book_slug,
-                    &mut extracted_images,
-                    &mut extracted_count,
-                )
-            };
-
             let text = if let Some(fragment) = &entry.fragment {
-                extract_section(content, fragment, allow_body, options.markdown_mode, &image_resolver)
+                extract_section(
+                    content,
+                    fragment,
+                    allow_body,
+                    options.markdown_mode,
+                    &mut image_resolver,
+                )
             } else if allow_body {
-                render_full_content(content, options.markdown_mode, &image_resolver)
+                render_full_content(
+                    content,
+                    options.markdown_mode,
+                    &mut image_resolver,
+                )
             } else {
                 None
             };
@@ -223,18 +238,11 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
             if options.markdown_mode == MarkdownMode::Rich {
                 collect_css(content, &href, &mut css_hrefs, &mut inline_styles);
             }
-            let image_resolver = |src: &str| -> Option<String> {
-                resolve_and_extract_image(
-                    &epub,
-                    src,
-                    &href,
-                    &image_root,
-                    &book_slug,
-                    &mut extracted_images,
-                    &mut extracted_count,
-                )
-            };
-            if let Some(text) = render_full_content(content, options.markdown_mode, &image_resolver) {
+            if let Some(text) = render_full_content(
+                content,
+                options.markdown_mode,
+                &mut image_resolver,
+            ) {
                 if !text.trim().is_empty() {
                     sections_by_entry[first_idx] = Some((toc_entries[first_idx].label.clone(), text));
                 }
@@ -261,18 +269,11 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
                 if options.markdown_mode == MarkdownMode::Rich {
                     collect_css(content, &href_path, &mut css_hrefs, &mut inline_styles);
                 }
-                let image_resolver = |src: &str| -> Option<String> {
-                    resolve_and_extract_image(
-                        &epub,
-                        src,
-                        &href_path,
-                        &image_root,
-                        &book_slug,
-                        &mut extracted_images,
-                        &mut extracted_count,
-                    )
-                };
-                if let Some(text) = render_full_content(content, options.markdown_mode, &image_resolver) {
+                if let Some(text) = render_full_content(
+                    content,
+                    options.markdown_mode,
+                    &mut image_resolver,
+                ) {
                     if !text.trim().is_empty() {
                         sections.push((label, text));
                     }
@@ -363,12 +364,11 @@ fn load_content<'a>(
         let html = epub
             .read_resource_str(href_path)
             .with_context(|| format!("Failed to read {href_path}"))?;
-        let document = parse_html().one(html.clone());
+        let document = parse_html().one(html);
         cache.insert(
             href_path.to_string(),
             ContentDoc {
                 href_path: href_path.to_string(),
-                html,
                 document,
             },
         );
@@ -467,41 +467,49 @@ fn extract_section(
     fragment: &str,
     allow_body: bool,
     markdown_mode: MarkdownMode,
-    image_resolver: &impl Fn(&str) -> Option<String>,
+    image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
 ) -> Option<String> {
     let anchor = find_anchor(&content.document, fragment)?;
     let container = find_container(&anchor, allow_body).unwrap_or(anchor.clone());
     match markdown_mode {
-        MarkdownMode::Plain => render_plain(&container, image_resolver),
-        MarkdownMode::Rich => Some(render_rich(&container, image_resolver)),
+        MarkdownMode::Plain => render_plain(&container, content, image_resolver),
+        MarkdownMode::Rich => Some(render_rich(&container, content, image_resolver)),
     }
 }
 
 fn render_full_content(
     content: &ContentDoc,
     markdown_mode: MarkdownMode,
-    image_resolver: &impl Fn(&str) -> Option<String>,
+    image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
 ) -> Option<String> {
     if let Ok(body) = content.document.select_first("body") {
         let body = body.as_node().clone();
         match markdown_mode {
-            MarkdownMode::Plain => render_plain(&body, image_resolver),
-            MarkdownMode::Rich => Some(render_rich(&body, image_resolver)),
+            MarkdownMode::Plain => render_plain(&body, content, image_resolver),
+            MarkdownMode::Rich => Some(render_rich(&body, content, image_resolver)),
         }
     } else {
         None
     }
 }
 
-fn render_plain(node: &NodeRef, image_resolver: &impl Fn(&str) -> Option<String>) -> Option<String> {
-    rewrite_images(node, image_resolver);
+fn render_plain(
+    node: &NodeRef,
+    content: &ContentDoc,
+    image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
+) -> Option<String> {
+    rewrite_images(node, content, image_resolver);
     let html = serialize_children(node);
     let md = html2md::parse_html(&html);
     let trimmed = md.trim().to_string();
     if trimmed.is_empty() { None } else { Some(trimmed) }
 }
 
-fn render_rich(node: &NodeRef, image_resolver: &impl Fn(&str) -> Option<String>) -> String {
+fn render_rich(
+    node: &NodeRef,
+    content: &ContentDoc,
+    image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
+) -> String {
     let mut chunks = Vec::new();
     for child in node.children() {
         if let Some(text) = child.as_text() {
@@ -512,10 +520,10 @@ fn render_rich(node: &NodeRef, image_resolver: &impl Fn(&str) -> Option<String>)
             continue;
         }
         if is_complex(&child) {
-            rewrite_images(&child, image_resolver);
+            rewrite_images(&child, content, image_resolver);
             chunks.push(serialize_node(&child));
         } else {
-            rewrite_images(&child, image_resolver);
+            rewrite_images(&child, content, image_resolver);
             let html = serialize_node(&child);
             let md = html2md::parse_html(&html);
             if !md.trim().is_empty() {
@@ -526,12 +534,16 @@ fn render_rich(node: &NodeRef, image_resolver: &impl Fn(&str) -> Option<String>)
     chunks.join("\n\n")
 }
 
-fn rewrite_images(node: &NodeRef, image_resolver: &impl Fn(&str) -> Option<String>) {
+fn rewrite_images(
+    node: &NodeRef,
+    content: &ContentDoc,
+    image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
+) {
     if let Ok(images) = node.select("img") {
         for img in images {
             let mut attrs = img.attributes.borrow_mut();
             if let Some(src) = attrs.get("src") {
-                if let Some(resolved) = image_resolver(src) {
+                if let Some(resolved) = image_resolver(src, &content.href_path) {
                     attrs.insert("src", resolved);
                 }
             }

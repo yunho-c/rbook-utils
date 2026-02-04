@@ -746,8 +746,6 @@ dependencies = [
 [[package]]
 name = "rbook"
 version = "0.6.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "114686ac7972d214a4120991e9cb47f674bcf7759f384dbf7830302fcb3cc9d1"
 dependencies = [
  "percent-encoding",
  "quick-xml",
@@ -764,7 +762,6 @@ dependencies = [
  "html2md",
  "kuchiki",
  "rbook",
- "typed-path",
  "urlencoding",
  "walkdir",
 ]
