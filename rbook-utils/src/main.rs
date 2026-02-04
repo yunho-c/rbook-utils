@@ -17,6 +17,8 @@ struct Cli {
     markdown_mode: MarkdownMode,
     #[arg(long, value_enum, default_value_t = StyleMode::Inline)]
     style: StyleMode,
+    #[arg(long)]
+    split_chapters: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -25,6 +27,7 @@ fn main() -> anyhow::Result<()> {
     options.media_all = cli.media_all;
     options.markdown_mode = cli.markdown_mode;
     options.style = cli.style;
+    options.split_chapters = cli.split_chapters;
 
     convert_all(&options)
 }

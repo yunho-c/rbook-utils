@@ -31,6 +31,7 @@ pub struct ConvertOptions {
     pub media_all: bool,
     pub markdown_mode: MarkdownMode,
     pub style: StyleMode,
+    pub split_chapters: bool,
 }
 
 impl ConvertOptions {
@@ -41,6 +42,7 @@ impl ConvertOptions {
             media_all: false,
             markdown_mode: MarkdownMode::Plain,
             style: StyleMode::Inline,
+            split_chapters: false,
         }
     }
 }
@@ -299,34 +301,64 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
         Vec::new()
     };
 
-    fs::create_dir_all(&options.output_dir)?;
-    let output_path = options.output_dir.join(format!("{book_slug}.md"));
+    let output_root = if options.split_chapters {
+        options.output_dir.join(&book_slug)
+    } else {
+        options.output_dir.clone()
+    };
+    fs::create_dir_all(&output_root)?;
 
-    let mut lines = Vec::new();
-    lines.push(format!("# {title}"));
+    let mut base_lines = Vec::new();
+    base_lines.push(format!("# {title}"));
     if let Some(author) = author {
-        lines.push(format!("**Author:** {author}"));
+        base_lines.push(format!("**Author:** {author}"));
     }
     if !style_header_lines.is_empty() {
-        lines.push(String::new());
-        lines.extend(style_header_lines);
+        base_lines.push(String::new());
+        base_lines.extend(style_header_lines.clone());
     }
-    lines.push(String::new());
+    base_lines.push(String::new());
 
-    for (section_title, section_text) in sections {
-        lines.push(format!("## {section_title}"));
-        lines.push(String::new());
-        lines.push(section_text);
-        lines.push(String::new());
+    let mut return_path = output_root.clone();
+    if options.split_chapters {
+        let width = std::cmp::max(2, sections.len().to_string().len());
+        for (idx, (section_title, section_text)) in sections.iter().enumerate() {
+            let section_slug = if section_title.trim().is_empty() {
+                format!("section_{:0width$}", idx + 1, width = width)
+            } else {
+                slugify(section_title)
+            };
+            let filename = format!(
+                "{:0width$}_{}.md",
+                idx + 1,
+                section_slug,
+                width = width
+            );
+            let mut lines = base_lines.clone();
+            lines.push(format!("## {section_title}"));
+            lines.push(String::new());
+            lines.push(section_text.clone());
+            lines.push(String::new());
+            fs::write(output_root.join(filename), lines.join("\n").trim().to_string() + "\n")?;
+        }
+    } else {
+        let output_path = output_root.join(format!("{book_slug}.md"));
+        let mut lines = base_lines;
+        for (section_title, section_text) in sections {
+            lines.push(format!("## {section_title}"));
+            lines.push(String::new());
+            lines.push(section_text);
+            lines.push(String::new());
+        }
+        fs::write(&output_path, lines.join("\n").trim().to_string() + "\n")?;
+        return_path = output_path;
     }
-
-    fs::write(&output_path, lines.join("\n").trim().to_string() + "\n")?;
 
     if extracted_count > 0 {
         println!("Extracted {extracted_count} images for {title}");
     }
 
-    Ok(output_path)
+    Ok(return_path)
 }
 
 fn build_toc_entries(epub: &Epub) -> Result<Vec<TocEntryInfo>> {
