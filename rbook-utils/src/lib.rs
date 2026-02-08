@@ -73,8 +73,6 @@ const COMPLEX_HTML_TAGS: &[&str] = &[
     "math",
 ];
 
-const CONTAINER_TAGS: &[&str] = &["section", "article", "div", "body"];
-
 const READABLE_MIME: &[&str] = &["application/xhtml+xml", "text/html"];
 
 pub fn convert_all(options: &ConvertOptions) -> Result<()> {
@@ -174,84 +172,91 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
     };
 
     let toc_entries = build_toc_entries(&epub)?;
+    let spine_hrefs: Vec<String> = epub
+        .spine()
+        .entries()
+        .filter_map(|entry| entry.manifest_entry())
+        .filter(|entry| is_readable(entry.media_type()))
+        .map(|entry| entry.href().as_str().to_string())
+        .collect();
+    let spine_index_by_href: HashMap<String, usize> = spine_hrefs
+        .iter()
+        .enumerate()
+        .map(|(idx, href)| (href.clone(), idx))
+        .collect();
     let mut sections: Vec<(String, String)> = Vec::new();
 
     if !toc_entries.is_empty() {
-        let mut href_counts: HashMap<String, usize> = HashMap::new();
-        for entry in &toc_entries {
-            *href_counts.entry(entry.href_path.clone()).or_insert(0) += 1;
-        }
-
-        let mut sections_by_entry: Vec<Option<(String, String)>> = vec![None; toc_entries.len()];
-        let mut href_has_section: HashMap<String, bool> = href_counts
-            .keys()
-            .map(|k| (k.clone(), false))
-            .collect();
-        let mut first_index_by_href: HashMap<String, usize> = HashMap::new();
-
         for (idx, entry) in toc_entries.iter().enumerate() {
-            first_index_by_href.entry(entry.href_path.clone()).or_insert(idx);
-            let content = match load_content(&epub, &entry.href_path, &mut content_cache) {
-                Ok(content) => content,
-                Err(_) => continue,
+            let Some(start_idx) = spine_index_by_href.get(&entry.href_path).copied() else {
+                continue;
             };
-            if options.markdown_mode == MarkdownMode::Rich {
-                collect_css(content, &entry.href_path, &mut css_hrefs, &mut inline_styles);
-            }
-            let allow_body = href_counts.get(&entry.href_path).copied().unwrap_or(0) == 1;
-            let text = if let Some(fragment) = &entry.fragment {
-                extract_section(
-                    content,
-                    fragment,
-                    allow_body,
-                    options.markdown_mode,
-                    &mut image_resolver,
-                )
-            } else if allow_body {
-                render_full_content(
-                    content,
-                    options.markdown_mode,
-                    &mut image_resolver,
-                )
+            let next_entry = toc_entries.get(idx + 1);
+            let end_idx = if let Some(next) = next_entry {
+                spine_index_by_href
+                    .get(&next.href_path)
+                    .copied()
+                    .unwrap_or(spine_hrefs.len().saturating_sub(1))
             } else {
-                None
+                spine_hrefs.len().saturating_sub(1)
             };
-
-            if let Some(text) = text {
-                if !text.trim().is_empty() {
-                    sections_by_entry[idx] = Some((entry.label.clone(), text));
-                    href_has_section.insert(entry.href_path.clone(), true);
-                }
-            }
-        }
-
-        for (href, has_section) in href_has_section {
-            if has_section {
+            if end_idx < start_idx {
                 continue;
             }
-            let first_idx = match first_index_by_href.get(&href) {
-                Some(idx) => *idx,
-                None => continue,
-            };
-            let content = match load_content(&epub, &href, &mut content_cache) {
-                Ok(content) => content,
-                Err(_) => continue,
-            };
-            if options.markdown_mode == MarkdownMode::Rich {
-                collect_css(content, &href, &mut css_hrefs, &mut inline_styles);
-            }
-            if let Some(text) = render_full_content(
-                content,
-                options.markdown_mode,
-                &mut image_resolver,
-            ) {
-                if !text.trim().is_empty() {
-                    sections_by_entry[first_idx] = Some((toc_entries[first_idx].label.clone(), text));
+
+            let mut chunks: Vec<String> = Vec::new();
+            for spine_idx in start_idx..=end_idx {
+                let Some(href) = spine_hrefs.get(spine_idx) else {
+                    continue;
+                };
+                let content = match load_content(&epub, href, &mut content_cache) {
+                    Ok(content) => content,
+                    Err(_) => continue,
+                };
+                if options.markdown_mode == MarkdownMode::Rich {
+                    collect_css(content, href, &mut css_hrefs, &mut inline_styles);
+                }
+
+                if let Some(next) = next_entry {
+                    if spine_idx == end_idx && next.fragment.is_none() {
+                        // Next section starts at the beginning of this file.
+                        continue;
+                    }
+                }
+
+                let start_fragment = if spine_idx == start_idx {
+                    entry.fragment.as_deref()
+                } else {
+                    None
+                };
+                let end_fragment = if let Some(next) = next_entry {
+                    if spine_idx == end_idx {
+                        next.fragment.as_deref()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(part) = render_partial_content(
+                    content,
+                    options.markdown_mode,
+                    start_fragment,
+                    end_fragment,
+                    &mut image_resolver,
+                ) {
+                    if !part.trim().is_empty() {
+                        chunks.push(part);
+                    }
                 }
             }
-        }
 
-        sections = sections_by_entry.into_iter().flatten().collect();
+            let text = chunks.join("\n\n").trim().to_string();
+            if !text.is_empty() {
+                sections.push((entry.label.clone(), text));
+            }
+        }
     } else {
         for spine_entry in epub.spine().entries() {
             if let Some(manifest_entry) = spine_entry.manifest_entry() {
@@ -321,6 +326,14 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
 
     let mut return_path = output_root.clone();
     if options.split_chapters {
+        if output_root.exists() {
+            for entry in fs::read_dir(&output_root)? {
+                let path = entry?.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
         let width = std::cmp::max(2, sections.len().to_string().len());
         for (idx, (section_title, section_text)) in sections.iter().enumerate() {
             let section_slug = if section_title.trim().is_empty() {
@@ -494,21 +507,6 @@ fn build_style_header(
     Ok(lines)
 }
 
-fn extract_section(
-    content: &ContentDoc,
-    fragment: &str,
-    allow_body: bool,
-    markdown_mode: MarkdownMode,
-    image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
-) -> Option<String> {
-    let anchor = find_anchor(&content.document, fragment)?;
-    let container = find_container(&anchor, allow_body).unwrap_or(anchor.clone());
-    match markdown_mode {
-        MarkdownMode::Plain => render_plain(&container, content, image_resolver),
-        MarkdownMode::Rich => Some(render_rich(&container, content, image_resolver)),
-    }
-}
-
 fn render_full_content(
     content: &ContentDoc,
     markdown_mode: MarkdownMode,
@@ -523,6 +521,132 @@ fn render_full_content(
     } else {
         None
     }
+}
+
+fn render_partial_content(
+    content: &ContentDoc,
+    markdown_mode: MarkdownMode,
+    start_fragment: Option<&str>,
+    end_fragment: Option<&str>,
+    image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
+) -> Option<String> {
+    if start_fragment.is_none() && end_fragment.is_none() {
+        return render_full_content(content, markdown_mode, image_resolver);
+    }
+
+    let body = content.document.select_first("body").ok()?.as_node().clone();
+    let children: Vec<NodeRef> = body.children().collect();
+    if children.is_empty() {
+        return None;
+    }
+
+    let mut start_idx = 0usize;
+    if let Some(fragment) = start_fragment {
+        let anchor = find_anchor(&content.document, fragment)?;
+        let top = top_level_body_child(&body, &anchor)?;
+        start_idx = child_index(&children, &top)?;
+    }
+
+    let mut end_idx = children.len();
+    if let Some(fragment) = end_fragment {
+        if let Some(anchor) = find_anchor(&content.document, fragment) {
+            if let Some(top) = top_level_body_child(&body, &anchor) {
+                if let Some(idx) = child_index(&children, &top) {
+                    if idx > start_idx {
+                        end_idx = idx;
+                    }
+                }
+            }
+        }
+    }
+
+    if start_idx >= end_idx {
+        return None;
+    }
+    let nodes = &children[start_idx..end_idx];
+    render_nodes_for_mode(nodes, content, markdown_mode, image_resolver)
+}
+
+fn render_nodes_for_mode(
+    nodes: &[NodeRef],
+    content: &ContentDoc,
+    markdown_mode: MarkdownMode,
+    image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
+) -> Option<String> {
+    match markdown_mode {
+        MarkdownMode::Plain => render_nodes_plain(nodes, content, image_resolver),
+        MarkdownMode::Rich => {
+            let rich = render_nodes_rich(nodes, content, image_resolver);
+            if rich.trim().is_empty() {
+                None
+            } else {
+                Some(rich.trim().to_string())
+            }
+        }
+    }
+}
+
+fn render_nodes_plain(
+    nodes: &[NodeRef],
+    content: &ContentDoc,
+    image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
+) -> Option<String> {
+    let mut html = String::new();
+    for node in nodes {
+        rewrite_images(node, content, image_resolver);
+        html.push_str(&serialize_node(node));
+    }
+    let md = html2md::parse_html(&html);
+    let trimmed = md.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn render_nodes_rich(
+    nodes: &[NodeRef],
+    content: &ContentDoc,
+    image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
+) -> String {
+    let mut chunks = Vec::new();
+    for node in nodes {
+        if let Some(text) = node.as_text() {
+            let t = text.borrow();
+            if !t.trim().is_empty() {
+                chunks.push(t.trim().to_string());
+            }
+            continue;
+        }
+        if is_complex(node) {
+            rewrite_images(node, content, image_resolver);
+            chunks.push(serialize_node(node));
+        } else {
+            rewrite_images(node, content, image_resolver);
+            let html = serialize_node(node);
+            let md = html2md::parse_html(&html);
+            if !md.trim().is_empty() {
+                chunks.push(md.trim().to_string());
+            }
+        }
+    }
+    chunks.join("\n\n")
+}
+
+fn top_level_body_child(body: &NodeRef, node: &NodeRef) -> Option<NodeRef> {
+    let mut current = node.clone();
+    loop {
+        let parent = current.parent()?;
+        if parent == *body {
+            return Some(current);
+        }
+        current = parent;
+    }
+}
+
+fn child_index(children: &[NodeRef], target: &NodeRef) -> Option<usize> {
+    children.iter().position(|child| child == target)
 }
 
 fn render_plain(
@@ -602,25 +726,6 @@ fn find_anchor(document: &NodeRef, fragment: &str) -> Option<NodeRef> {
                     return Some(node.as_node().clone());
                 }
             }
-        }
-    }
-    None
-}
-
-fn find_container(anchor: &NodeRef, allow_body: bool) -> Option<NodeRef> {
-    let mut current = anchor.clone();
-    loop {
-        if let Some(tag) = element_name(&current) {
-            if CONTAINER_TAGS.contains(&tag) {
-                if tag == "body" && !allow_body {
-                    return None;
-                }
-                return Some(current.clone());
-            }
-        }
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => break,
         }
     }
     None
