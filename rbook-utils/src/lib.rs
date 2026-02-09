@@ -170,6 +170,16 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
     let book_slug = slugify(&title);
     let image_root = options.output_dir.join(&book_slug).join("images");
     let style_root = options.output_dir.join(&book_slug).join("styles");
+    let image_link_prefix = if options.split_chapters {
+        "./images".to_string()
+    } else {
+        format!("./{book_slug}/images")
+    };
+    let style_link_prefix = if options.split_chapters {
+        "./styles".to_string()
+    } else {
+        format!("./{book_slug}/styles")
+    };
 
     let mut extracted_images: HashMap<String, String> = HashMap::new();
     let mut extracted_count = 0usize;
@@ -184,7 +194,7 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
                 &epub,
                 &href,
                 &image_root,
-                &book_slug,
+                &image_link_prefix,
                 &mut extracted_images,
                 &mut extracted_count,
             );
@@ -199,7 +209,7 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
             src,
             base_href,
             &image_root,
-            &book_slug,
+            &image_link_prefix,
             &mut extracted_images,
             &mut extracted_count,
         )
@@ -433,7 +443,7 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
             &css_hrefs,
             &inline_styles,
             &style_root,
-            &book_slug,
+            &style_link_prefix,
             options.style,
         )?
     } else {
@@ -806,7 +816,7 @@ fn build_style_header(
     css_hrefs: &HashSet<String>,
     inline_styles: &[String],
     styles_root: &Path,
-    book_slug: &str,
+    style_link_prefix: &str,
     style_mode: StyleMode,
 ) -> Result<Vec<String>> {
     let mut lines = Vec::new();
@@ -825,7 +835,7 @@ fn build_style_header(
                 }
                 fs::write(&output_path, bytes)?;
                 lines.push(format!(
-                    "<link rel=\"stylesheet\" href=\"./{book_slug}/styles/{relative}\">"
+                    "<link rel=\"stylesheet\" href=\"{style_link_prefix}/{relative}\">"
                 ));
             }
 
@@ -834,7 +844,7 @@ fn build_style_header(
                 let inline_path = styles_root.join("inline_styles.css");
                 fs::write(&inline_path, inline_styles.join("\n\n"))?;
                 lines.push(format!(
-                    "<link rel=\"stylesheet\" href=\"./{book_slug}/styles/inline_styles.css\">"
+                    "<link rel=\"stylesheet\" href=\"{style_link_prefix}/inline_styles.css\">"
                 ));
             }
         }
@@ -1127,7 +1137,7 @@ fn resolve_and_extract_image(
     src: &str,
     base_href: &str,
     image_root: &Path,
-    book_slug: &str,
+    image_link_prefix: &str,
     extracted: &mut HashMap<String, String>,
     extracted_count: &mut usize,
 ) -> Option<String> {
@@ -1151,7 +1161,7 @@ fn resolve_and_extract_image(
     }
     if fs::write(&output_path, bytes).is_ok() {
         *extracted_count += 1;
-        let rel_path = format!("./{book_slug}/images/{relative}");
+        let rel_path = format!("{image_link_prefix}/{relative}");
         extracted.insert(resolved.clone(), rel_path.clone());
         Some(rel_path)
     } else {
@@ -1163,7 +1173,7 @@ fn extract_image(
     epub: &Epub,
     resolved: &str,
     image_root: &Path,
-    book_slug: &str,
+    image_link_prefix: &str,
     extracted: &mut HashMap<String, String>,
     extracted_count: &mut usize,
 ) -> Option<String> {
@@ -1178,7 +1188,7 @@ fn extract_image(
     }
     fs::write(&output_path, bytes).ok()?;
     *extracted_count += 1;
-    let rel_path = format!("./{book_slug}/images/{relative}");
+    let rel_path = format!("{image_link_prefix}/{relative}");
     extracted.insert(resolved.to_string(), rel_path.clone());
     Some(rel_path)
 }
