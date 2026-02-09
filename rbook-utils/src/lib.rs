@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use rbook::ebook::manifest::Manifest;
 use rbook::ebook::spine::Spine;
 use rbook::ebook::toc::{Toc, TocChildren, TocEntry};
@@ -24,6 +26,13 @@ pub enum StyleMode {
     External,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum ChapterFallbackMode {
+    Off,
+    Auto,
+    Force,
+}
+
 #[derive(Clone, Debug)]
 pub struct ConvertOptions {
     pub input_dir: PathBuf,
@@ -32,6 +41,7 @@ pub struct ConvertOptions {
     pub markdown_mode: MarkdownMode,
     pub style: StyleMode,
     pub split_chapters: bool,
+    pub chapter_fallback: ChapterFallbackMode,
 }
 
 impl ConvertOptions {
@@ -43,6 +53,7 @@ impl ConvertOptions {
             markdown_mode: MarkdownMode::Plain,
             style: StyleMode::Inline,
             split_chapters: false,
+            chapter_fallback: ChapterFallbackMode::Auto,
         }
     }
 }
@@ -60,6 +71,13 @@ struct ContentDoc {
     document: NodeRef,
 }
 
+#[derive(Clone, Debug)]
+struct HeadingCandidate {
+    spine_idx: usize,
+    score: f32,
+    label: String,
+}
+
 const COMPLEX_HTML_TAGS: &[&str] = &[
     "table",
     "thead",
@@ -74,6 +92,22 @@ const COMPLEX_HTML_TAGS: &[&str] = &[
 ];
 
 const READABLE_MIME: &[&str] = &["application/xhtml+xml", "text/html"];
+static MAJOR_HEADING_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)\b(?:chapter|book|part)\s+(?:[ivxlcdm]+|\d+)\b|\b(?:preface|prologue|epilogue|introduction|foreword|afterword)\b",
+    )
+    .expect("valid heading regex")
+});
+static MAJOR_HEADING_LABEL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)\b(?:chapter|book|part)\s+(?:[ivxlcdm]+|\d+)(?:\s*[:.-]?\s*[a-z0-9][a-z0-9' -]{0,70})?|\b(?:preface|prologue|epilogue|introduction|foreword|afterword)\b",
+    )
+    .expect("valid heading label regex")
+});
+static OCR_NOISE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)estimated\s+to\s+be\s+only\s+\d+(?:\.\d+)?%\s+accurate")
+        .expect("valid ocr regex")
+});
 
 pub fn convert_all(options: &ConvertOptions) -> Result<()> {
     let mut epub_paths = Vec::new();
@@ -184,9 +218,109 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
         .enumerate()
         .map(|(idx, href)| (href.clone(), idx))
         .collect();
+    let (toc_is_degenerate, toc_entry_count, toc_unique_count, toc_coverage_ratio) =
+        toc_degeneracy_stats(&toc_entries, spine_hrefs.len());
     let mut sections: Vec<(String, String)> = Vec::new();
 
-    if !toc_entries.is_empty() {
+    let mut use_heading_fallback = false;
+    let attempt_heading_fallback = match options.chapter_fallback {
+        ChapterFallbackMode::Off => false,
+        ChapterFallbackMode::Auto => {
+            if toc_is_degenerate {
+                true
+            } else {
+                eprintln!(
+                    "Warning: heading fallback skipped for {}: TOC not degenerate (entries={}, unique_hrefs={}, coverage={:.2}).",
+                    title, toc_entry_count, toc_unique_count, toc_coverage_ratio
+                );
+                false
+            }
+        }
+        ChapterFallbackMode::Force => true,
+    };
+
+    if attempt_heading_fallback {
+        let heading_candidates = detect_heading_candidates(&spine_hrefs, &mut content_cache, &epub);
+        let confident_candidates: Vec<HeadingCandidate> = heading_candidates
+            .into_iter()
+            .filter(|candidate| candidate.spine_idx > 0)
+            .collect();
+        if !confident_candidates.is_empty() {
+            let first_label = toc_entries
+                .first()
+                .map(|entry| entry.label.clone())
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| {
+                    spine_hrefs
+                        .first()
+                        .map(|href| prettify_section_name(href))
+                        .unwrap_or_else(|| "Section 1".to_string())
+                });
+            let mut starts: Vec<(usize, String)> = vec![(0, first_label)];
+            for candidate in &confident_candidates {
+                let label = if candidate.label.trim().is_empty() {
+                    format!("Section {}", starts.len() + 1)
+                } else {
+                    candidate.label.clone()
+                };
+                starts.push((candidate.spine_idx, label));
+            }
+
+            eprintln!(
+                "Warning: using heading fallback for {} (mode={:?}, toc_entries={}, spine_docs={}, detected_starts={}).",
+                title,
+                options.chapter_fallback,
+                toc_entry_count,
+                spine_hrefs.len(),
+                confident_candidates.len()
+            );
+            use_heading_fallback = true;
+
+            for (start_pos, (start_idx, section_label)) in starts.iter().enumerate() {
+                let next_start = starts
+                    .get(start_pos + 1)
+                    .map(|(idx, _)| *idx)
+                    .unwrap_or(spine_hrefs.len());
+                if next_start == 0 || next_start <= *start_idx {
+                    continue;
+                }
+                let end_idx = next_start - 1;
+                let mut chunks: Vec<String> = Vec::new();
+                for spine_idx in *start_idx..=end_idx {
+                    let Some(href) = spine_hrefs.get(spine_idx) else {
+                        continue;
+                    };
+                    let content = match load_content(&epub, href, &mut content_cache) {
+                        Ok(content) => content,
+                        Err(_) => continue,
+                    };
+                    if options.markdown_mode == MarkdownMode::Rich {
+                        collect_css(content, href, &mut css_hrefs, &mut inline_styles);
+                    }
+                    if let Some(part) = render_full_content(
+                        content,
+                        options.markdown_mode,
+                        &mut image_resolver,
+                    ) {
+                        if !part.trim().is_empty() {
+                            chunks.push(part);
+                        }
+                    }
+                }
+                let text = chunks.join("\n\n").trim().to_string();
+                if !text.is_empty() {
+                    sections.push((section_label.clone(), text));
+                }
+            }
+        } else {
+            eprintln!(
+                "Warning: heading fallback skipped for {}: insufficient heading confidence.",
+                title
+            );
+        }
+    }
+
+    if !use_heading_fallback && !toc_entries.is_empty() {
         for (idx, entry) in toc_entries.iter().enumerate() {
             let Some(start_idx) = spine_index_by_href.get(&entry.href_path).copied() else {
                 continue;
@@ -257,7 +391,7 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
                 sections.push((entry.label.clone(), text));
             }
         }
-    } else {
+    } else if !use_heading_fallback {
         for spine_entry in epub.spine().entries() {
             if let Some(manifest_entry) = spine_entry.manifest_entry() {
                 if !is_readable(manifest_entry.media_type()) {
@@ -336,11 +470,20 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
         }
         let width = std::cmp::max(2, sections.len().to_string().len());
         for (idx, (section_title, section_text)) in sections.iter().enumerate() {
-            let section_slug = if section_title.trim().is_empty() {
+            let mut section_slug = if section_title.trim().is_empty() {
                 format!("section_{:0width$}", idx + 1, width = width)
             } else {
                 slugify(section_title)
             };
+            section_slug = section_slug
+                .chars()
+                .take(80)
+                .collect::<String>()
+                .trim_matches(&['_', '.', '-'][..])
+                .to_string();
+            if section_slug.is_empty() {
+                section_slug = format!("section_{:0width$}", idx + 1, width = width);
+            }
             let filename = format!(
                 "{:0width$}_{}.md",
                 idx + 1,
@@ -398,6 +541,213 @@ fn build_toc_entries(epub: &Epub) -> Result<Vec<TocEntryInfo>> {
         }
     }
     Ok(entries)
+}
+
+fn toc_degeneracy_stats(
+    toc_entries: &[TocEntryInfo],
+    spine_doc_count: usize,
+) -> (bool, usize, usize, f32) {
+    let toc_entry_count = toc_entries.len();
+    let unique_toc_hrefs: HashSet<&str> =
+        toc_entries.iter().map(|entry| entry.href_path.as_str()).collect();
+    let unique_count = unique_toc_hrefs.len();
+    let coverage_ratio = if spine_doc_count > 0 {
+        unique_count as f32 / spine_doc_count as f32
+    } else {
+        0.0
+    };
+    let is_degenerate =
+        toc_entry_count <= 1 || unique_count < 3 || coverage_ratio < 0.15;
+    (is_degenerate, toc_entry_count, unique_count, coverage_ratio)
+}
+
+fn detect_heading_candidates(
+    spine_hrefs: &[String],
+    cache: &mut HashMap<String, ContentDoc>,
+    epub: &Epub,
+) -> Vec<HeadingCandidate> {
+    let mut accepted: Vec<HeadingCandidate> = Vec::new();
+    let min_gap_docs = 2usize;
+
+    for (idx, href) in spine_hrefs.iter().enumerate() {
+        let content = match load_content(epub, href, cache) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+        let (score, label, true_heading) = score_heading_candidate(content);
+        if score < 1.0 {
+            continue;
+        }
+        if idx == 0 && !true_heading {
+            continue;
+        }
+
+        let candidate = HeadingCandidate {
+            spine_idx: idx,
+            score,
+            label: clean_heading_label(&label),
+        };
+
+        if let Some(prev) = accepted.last_mut() {
+            if idx.saturating_sub(prev.spine_idx) < min_gap_docs {
+                if candidate.score > prev.score {
+                    *prev = candidate;
+                }
+                continue;
+            }
+        }
+        accepted.push(candidate);
+    }
+
+    accepted
+}
+
+fn score_heading_candidate(content: &ContentDoc) -> (f32, String, bool) {
+    let (top_window_text, first_nonempty_line, heading_texts) =
+        extract_heading_features(content);
+
+    let mut score = 0.0f32;
+    let mut label = String::new();
+    let mut heading_match = false;
+
+    for heading_text in &heading_texts {
+        if MAJOR_HEADING_RE.is_match(heading_text) {
+            score += 0.9;
+            heading_match = true;
+            label = extract_major_heading_label(heading_text)
+                .unwrap_or_else(|| clean_heading_label(heading_text));
+            break;
+        }
+    }
+
+    let top_match = MAJOR_HEADING_RE.find(&top_window_text);
+    if top_match.is_some() {
+        score += 0.8;
+        if label.is_empty() {
+            if !first_nonempty_line.is_empty() && MAJOR_HEADING_RE.is_match(&first_nonempty_line)
+            {
+                label = extract_major_heading_label(&first_nonempty_line)
+                    .unwrap_or_else(|| clean_heading_label(&first_nonempty_line));
+            } else if let Some(found) = top_match {
+                label = extract_major_heading_label(&top_window_text)
+                    .unwrap_or_else(|| clean_heading_label(found.as_str()));
+            }
+        }
+    }
+
+    let first_line_major_match =
+        !first_nonempty_line.is_empty() && MAJOR_HEADING_RE.is_match(&first_nonempty_line);
+    if !first_nonempty_line.is_empty()
+        && (is_heading_like_line(&first_nonempty_line) || first_line_major_match)
+    {
+        score += 0.4;
+        if label.is_empty() && first_line_major_match {
+            label = extract_major_heading_label(&first_nonempty_line)
+                .unwrap_or_else(|| clean_heading_label(&first_nonempty_line));
+        }
+    }
+
+    if OCR_NOISE_RE.is_match(&top_window_text) {
+        score -= 0.5;
+    }
+
+    score = score.clamp(0.0, 2.0);
+    let true_heading = heading_match || top_match.is_some();
+    (score, label, true_heading)
+}
+
+fn extract_heading_features(content: &ContentDoc) -> (String, String, Vec<String>) {
+    let Ok(body) = content.document.select_first("body") else {
+        return (String::new(), String::new(), Vec::new());
+    };
+    let body_node = body.as_node();
+    let body_text = body_node.text_contents();
+    let top_window_raw: String = body_text.chars().take(1500).collect();
+    let top_window_text = normalize_space(&top_window_raw);
+
+    let mut first_nonempty_line = String::new();
+    for line in top_window_raw.lines() {
+        let stripped = normalize_space(line);
+        if !stripped.is_empty() {
+            first_nonempty_line = stripped;
+            break;
+        }
+    }
+    if first_nonempty_line.is_empty() && !top_window_text.is_empty() {
+        first_nonempty_line = top_window_text.chars().take(80).collect::<String>();
+    }
+
+    let mut heading_texts: Vec<String> = Vec::new();
+    if let Ok(headings) = body_node.select("h1, h2, h3") {
+        for heading in headings {
+            let text = normalize_space(&heading.text_contents());
+            if !text.is_empty() {
+                heading_texts.push(text);
+            }
+        }
+    }
+
+    (top_window_text, first_nonempty_line, heading_texts)
+}
+
+fn is_heading_like_line(line: &str) -> bool {
+    let normalized = normalize_space(line);
+    if normalized.is_empty() || normalized.chars().count() > 80 {
+        return false;
+    }
+    let words: Vec<&str> = normalized
+        .split_whitespace()
+        .filter(|word| word.chars().any(|c| c.is_alphabetic()))
+        .collect();
+    if words.is_empty() {
+        return false;
+    }
+    let letters: Vec<char> = normalized.chars().filter(|c| c.is_alphabetic()).collect();
+    if letters.is_empty() {
+        return false;
+    }
+    let all_caps = letters.iter().all(|c| !c.is_lowercase());
+    let title_like = words
+        .iter()
+        .filter(|word| word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false))
+        .count()
+        >= std::cmp::max(1, (words.len() * 8) / 10);
+    all_caps || title_like
+}
+
+fn normalize_space(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn clean_heading_label(text: &str) -> String {
+    let normalized = normalize_space(text);
+    normalized
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .to_string()
+}
+
+fn extract_major_heading_label(text: &str) -> Option<String> {
+    MAJOR_HEADING_LABEL_RE
+        .find(text)
+        .map(|m| clean_heading_label(m.as_str()))
+        .filter(|label| !label.is_empty())
+}
+
+fn prettify_section_name(value: &str) -> String {
+    let file_name = value
+        .rsplit('/')
+        .next()
+        .unwrap_or(value)
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(value);
+    let cleaned = file_name.replace(['_', '-'], " ");
+    let cleaned = normalize_space(&cleaned);
+    if cleaned.is_empty() {
+        value.to_string()
+    } else {
+        cleaned
+    }
 }
 
 fn load_content<'a>(

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use rbook_utils::{ConvertOptions, MarkdownMode, StyleMode, convert_all};
+use rbook_utils::{ChapterFallbackMode, ConvertOptions, MarkdownMode, StyleMode, convert_all};
 
 #[derive(Parser, Debug)]
 #[command(name = "rbook-utils")]
@@ -19,6 +19,8 @@ struct Cli {
     style: StyleMode,
     #[arg(long)]
     split_chapters: bool,
+    #[arg(long, value_enum, default_value_t = ChapterFallbackMode::Auto)]
+    chapter_fallback: ChapterFallbackMode,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -28,6 +30,7 @@ fn main() -> anyhow::Result<()> {
     options.markdown_mode = cli.markdown_mode;
     options.style = cli.style;
     options.split_chapters = cli.split_chapters;
+    options.chapter_fallback = cli.chapter_fallback;
 
     convert_all(&options)
 }
