@@ -139,6 +139,15 @@ struct SectionRecord {
     output_path: String,
 }
 
+#[derive(Clone, Debug, Default)]
+struct PostprocessStats {
+    link_rewritten: usize,
+    link_unresolved: usize,
+    cleanup_changes: usize,
+    notes_written: usize,
+    global_note_lines: Vec<String>,
+}
+
 const COMPLEX_HTML_TAGS: &[&str] = &[
     "table",
     "thead",
@@ -605,158 +614,19 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
         anyhow::bail!("No readable sections found in {}", epub_path.display());
     }
 
-    let mut cleanup_changes = 0usize;
-    for section in &mut sections {
-        section.section_id = build_section_id(
-            &section.start_href,
-            section.start_fragment.as_deref(),
-            section.end_href.as_deref(),
-            section.end_fragment.as_deref(),
-        );
-        let (cleaned, changes) = apply_ocr_cleanup(&section.text, options.ocr_cleanup);
-        section.text = cleaned;
-        cleanup_changes += changes;
-    }
-
-    if options.split_chapters {
-        let width = std::cmp::max(2, sections.len().to_string().len());
-        for (idx, section) in sections.iter_mut().enumerate() {
-            let mut section_slug = if section.title.trim().is_empty() {
-                format!("section_{:0width$}", idx + 1, width = width)
-            } else {
-                slugify(&section.title)
-            };
-            section_slug = section_slug
-                .chars()
-                .take(80)
-                .collect::<String>()
-                .trim_matches(&['_', '.', '-'][..])
-                .to_string();
-            if section_slug.is_empty() {
-                section_slug = format!("section_{:0width$}", idx + 1, width = width);
-            }
-            section.output_path = match options.filename_scheme {
-                FilenameScheme::Legacy => {
-                    format!("{:0width$}_{}.md", idx + 1, section_slug, width = width)
-                }
-                FilenameScheme::Stable => format!("{}_{}.md", section.section_id, section_slug),
-            };
-        }
-    } else {
-        for section in &mut sections {
-            section.output_path = format!("{book_slug}.md");
-        }
-    }
-
-    let mut href_to_section: HashMap<String, usize> = HashMap::new();
-    let mut anchor_to_section: HashMap<(String, String), usize> = HashMap::new();
-    for (idx, section) in sections.iter().enumerate() {
-        href_to_section
-            .entry(section.start_href.clone())
-            .or_insert(idx);
-        if let Some(fragment) = &section.start_fragment {
-            anchor_to_section.insert((section.start_href.clone(), fragment.clone()), idx);
-        }
-        for anchor in &section.anchors {
-            anchor_to_section.insert((section.start_href.clone(), anchor.clone()), idx);
-        }
-    }
-
-    let mut link_rewritten = 0usize;
-    let mut link_unresolved = 0usize;
-    for idx in 0..sections.len() {
-        let base_href = sections[idx].start_href.clone();
-        let replacer = |target: &str| -> (String, bool) {
-            let Some((target_href, fragment)) = resolve_internal_target(target, &base_href) else {
-                return (target.to_string(), true);
-            };
-            let mut target_idx = None;
-            if let Some(frag) = &fragment {
-                target_idx = anchor_to_section
-                    .get(&(target_href.clone(), frag.clone()))
-                    .copied();
-            }
-            if target_idx.is_none() {
-                target_idx = href_to_section.get(&target_href).copied();
-            }
-            let Some(target_idx) = target_idx else {
-                return (target.to_string(), false);
-            };
-            if options.split_chapters {
-                if target_idx == idx {
-                    if let Some(frag) = fragment {
-                        return (format!("#{frag}"), true);
-                    }
-                    return (format!("./{}", sections[target_idx].output_path), true);
-                }
-                let mut out = format!("./{}", sections[target_idx].output_path);
-                if let Some(frag) = fragment {
-                    out.push('#');
-                    out.push_str(&frag);
-                }
-                return (out, true);
-            }
-            if let Some(frag) = fragment {
-                return (format!("#{frag}"), true);
-            }
-            (format!("#{}", sections[target_idx].section_id), true)
-        };
-        let (rewritten_md, md_rw, md_unresolved) =
-            replace_markdown_links(&sections[idx].text, replacer);
-        let (rewritten_html, html_rw, html_unresolved) =
-            replace_html_links(&rewritten_md, replacer);
-        sections[idx].text = rewritten_html;
-        link_rewritten += md_rw + html_rw;
-        link_unresolved += md_unresolved + html_unresolved;
-    }
-    if link_unresolved > 0 {
+    let stats = postprocess_sections(
+        &mut sections,
+        options.split_chapters,
+        options.filename_scheme,
+        &book_slug,
+        options.ocr_cleanup,
+        options.notes_mode,
+    );
+    if stats.link_unresolved > 0 {
         warn(format!(
-            "{}: unresolved internal links detected ({link_unresolved}).",
-            title
+            "{}: unresolved internal links detected ({}).",
+            title, stats.link_unresolved
         ));
-    }
-
-    let mut notes_written = 0usize;
-    let mut global_note_lines: Vec<String> = Vec::new();
-    if options.notes_mode != NotesMode::Inline {
-        for section in &mut sections {
-            let (stripped, notes) = extract_markdown_footnotes(&section.text);
-            if notes.is_empty() {
-                continue;
-            }
-            let mut id_map: HashMap<String, String> = HashMap::new();
-            for (idx, (note_id, _)) in notes.iter().enumerate() {
-                id_map.insert(
-                    note_id.clone(),
-                    format!("note-{}-{:03}", section.section_id, idx + 1),
-                );
-            }
-            section.text = rewrite_note_refs(&stripped, &id_map);
-            let rendered_defs: Vec<String> = notes
-                .iter()
-                .map(|(note_id, text)| {
-                    format!("[^{}]: {}", id_map.get(note_id).unwrap_or(note_id), text)
-                })
-                .collect();
-            notes_written += rendered_defs.len();
-            match options.notes_mode {
-                NotesMode::Inline => {}
-                NotesMode::ChapterEnd => {
-                    section.text = format!(
-                        "{}\n\n### Notes\n\n{}",
-                        section.text.trim(),
-                        rendered_defs.join("\n")
-                    );
-                }
-                NotesMode::Global => {
-                    global_note_lines
-                        .push(format!("## {} ({})", section.title, section.section_id));
-                    global_note_lines.push(String::new());
-                    global_note_lines.extend(rendered_defs);
-                    global_note_lines.push(String::new());
-                }
-            }
-        }
     }
 
     let style_header_lines = if options.markdown_mode == MarkdownMode::Rich {
@@ -772,72 +642,17 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
         Vec::new()
     };
 
-    let output_root = if options.split_chapters {
-        book_dir.clone()
-    } else {
-        options.output_dir.clone()
-    };
-    fs::create_dir_all(&output_root)?;
-
-    let mut base_lines = Vec::new();
-    base_lines.push(format!("# {title}"));
-    if let Some(ref author) = author {
-        base_lines.push(format!("**Author:** {author}"));
-    }
-    if !style_header_lines.is_empty() {
-        base_lines.push(String::new());
-        base_lines.extend(style_header_lines.clone());
-    }
-    base_lines.push(String::new());
-
-    let mut return_path = output_root.clone();
-    if options.split_chapters {
-        if output_root.exists() {
-            for entry in fs::read_dir(&output_root)? {
-                let path = entry?.path();
-                if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
-                    let _ = fs::remove_file(path);
-                }
-            }
-        }
-        for section in &sections {
-            let mut lines = base_lines.clone();
-            lines.push(format!("<a id=\"{}\"></a>", section.section_id));
-            lines.push(format!("## {}", section.title));
-            lines.push(String::new());
-            lines.push(section.text.clone());
-            lines.push(String::new());
-            fs::write(
-                output_root.join(&section.output_path),
-                lines.join("\n").trim().to_string() + "\n",
-            )?;
-        }
-    } else {
-        let output_path = output_root.join(format!("{book_slug}.md"));
-        let mut lines = base_lines;
-        for section in &sections {
-            lines.push(format!("<a id=\"{}\"></a>", section.section_id));
-            lines.push(format!("## {}", section.title));
-            lines.push(String::new());
-            lines.push(section.text.clone());
-            lines.push(String::new());
-        }
-        if options.notes_mode == NotesMode::Global && !global_note_lines.is_empty() {
-            lines.push("## Notes".to_string());
-            lines.push(String::new());
-            lines.extend(global_note_lines.clone());
-        }
-        fs::write(&output_path, lines.join("\n").trim().to_string() + "\n")?;
-        return_path = output_path;
-    }
-
-    if options.notes_mode == NotesMode::Global && !global_note_lines.is_empty() {
-        fs::create_dir_all(&book_dir)?;
-        fs::write(
-            book_dir.join("notes.md"),
-            format!("# Notes\n\n{}\n", global_note_lines.join("\n").trim()),
-        )?;
-    }
+    let return_path = write_markdown_outputs(
+        &sections,
+        options,
+        &options.output_dir,
+        &book_dir,
+        &book_slug,
+        &title,
+        author.as_ref(),
+        &style_header_lines,
+        &stats.global_note_lines,
+    )?;
 
     if extracted_count > 0 {
         println!("Extracted {extracted_count} images for {title}");
@@ -846,124 +661,35 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
         println!("Extracted {extracted_media_count} media files for {title}");
     }
 
-    if options.export_manifest == ExportMode::V1 {
-        fs::create_dir_all(&book_dir)?;
-        let sections_json: Vec<serde_json::Value> = sections
-            .iter()
-            .enumerate()
-            .map(|(idx, section)| {
-                json!({
-                    "section_id": section.section_id,
-                    "order": idx + 1,
-                    "title": section.title,
-                    "output_path": if options.split_chapters {
-                        format!("{}/{}", book_slug, section.output_path)
-                    } else {
-                        section.output_path.clone()
-                    },
-                    "source_start": {
-                        "href": section.start_href,
-                        "fragment": section.start_fragment,
-                        "spine_index": section.spine_start,
-                    },
-                    "source_end": {
-                        "href": section.end_href,
-                        "fragment": section.end_fragment,
-                        "spine_index": section.spine_end,
-                    },
-                    "anchors": section.anchors,
-                })
-            })
-            .collect();
-        let toc_json: Vec<serde_json::Value> = toc_entries
-            .iter()
-            .enumerate()
-            .map(|(idx, entry)| {
-                json!({
-                    "order": idx,
-                    "label": entry.label,
-                    "href": entry.href_path,
-                    "fragment": entry.fragment
-                })
-            })
-            .collect();
-        let manifest_payload = json!({
-            "schema_version": "v1",
-            "book": {
-                "title": title,
-                "authors": author.clone().unwrap_or_default(),
-                "slug": book_slug,
-            },
-            "spine": spine_hrefs.iter().enumerate().map(|(idx, href)| {
-                json!({"index": idx, "href": href})
-            }).collect::<Vec<_>>(),
-            "toc_tree": toc_json,
-            "sections": sections_json,
-            "landmarks": [],
-            "page_list": [],
-            "assets": {
-                "images": extracted_images.keys().collect::<Vec<_>>(),
-                "media": extracted_media.keys().collect::<Vec<_>>(),
-            },
-            "build": {
-                "markdown_mode": format!("{:?}", options.markdown_mode),
-                "style": format!("{:?}", options.style),
-                "split_chapters": options.split_chapters,
-                "chapter_fallback": format!("{:?}", options.chapter_fallback),
-                "notes_mode": format!("{:?}", options.notes_mode),
-                "ocr_cleanup": format!("{:?}", options.ocr_cleanup),
-                "nav_cleanup": format!("{:?}", options.nav_cleanup),
-                "filename_scheme": format!("{:?}", options.filename_scheme),
-            }
-        });
-        fs::write(
-            book_dir.join("manifest.v1.json"),
-            serde_json::to_string_pretty(&manifest_payload)? + "\n",
-        )?;
-    }
-
-    if options.quality_report == ExportMode::V1 {
-        fs::create_dir_all(&book_dir)?;
-        let report = json!({
-            "toc_stats": {
-                "entries": toc_entry_count,
-                "unique_hrefs": toc_unique_count,
-                "coverage_ratio": toc_coverage_ratio,
-                "degenerate": toc_is_degenerate,
-            },
-            "fallback_stats": {
-                "mode": format!("{:?}", options.chapter_fallback),
-                "used_heading_fallback": use_heading_fallback,
-            },
-            "link_stats": {
-                "rewritten": link_rewritten,
-                "unresolved": link_unresolved,
-            },
-            "asset_stats": {
-                "images_extracted": extracted_count,
-                "media_extracted": extracted_media_count,
-                "missing_assets": warnings.iter().filter(|msg| msg.contains("missing media")).count(),
-            },
-            "ocr_stats": {
-                "mode": format!("{:?}", options.ocr_cleanup),
-                "cleanup_changes": cleanup_changes,
-            },
-            "cleanup_stats": {
-                "nav_cleanup_mode": format!("{:?}", options.nav_cleanup),
-                "toc_entries_removed": nav_removed,
-            },
-            "notes_stats": {
-                "mode": format!("{:?}", options.notes_mode),
-                "notes_written": notes_written,
-            },
-            "warnings": warnings,
-            "errors": errors,
-        });
-        fs::write(
-            book_dir.join("report.v1.json"),
-            serde_json::to_string_pretty(&report)? + "\n",
-        )?;
-    }
+    write_manifest_export(
+        options.export_manifest,
+        &book_dir,
+        &title,
+        author.as_ref(),
+        &book_slug,
+        &spine_hrefs,
+        &toc_entries,
+        &sections,
+        &extracted_images,
+        &extracted_media,
+        options,
+    )?;
+    write_quality_report(
+        options.quality_report,
+        &book_dir,
+        toc_entry_count,
+        toc_unique_count,
+        toc_coverage_ratio,
+        toc_is_degenerate,
+        use_heading_fallback,
+        options,
+        &stats,
+        extracted_count,
+        extracted_media_count,
+        nav_removed,
+        &warnings,
+        &errors,
+    )?;
 
     Ok(return_path)
 }
@@ -2016,4 +1742,419 @@ fn rewrite_note_refs(text: &str, id_map: &HashMap<String, String>) -> String {
             format!("[^{}]", mapped)
         })
         .to_string()
+}
+
+fn assign_section_output_paths(
+    sections: &mut [SectionRecord],
+    split_chapters: bool,
+    filename_scheme: FilenameScheme,
+    book_slug: &str,
+) {
+    if !split_chapters {
+        for section in sections {
+            section.output_path = format!("{book_slug}.md");
+        }
+        return;
+    }
+    let width = std::cmp::max(2, sections.len().to_string().len());
+    for (idx, section) in sections.iter_mut().enumerate() {
+        let mut section_slug = if section.title.trim().is_empty() {
+            format!("section_{:0width$}", idx + 1, width = width)
+        } else {
+            slugify(&section.title)
+        };
+        section_slug = section_slug
+            .chars()
+            .take(80)
+            .collect::<String>()
+            .trim_matches(&['_', '.', '-'][..])
+            .to_string();
+        if section_slug.is_empty() {
+            section_slug = format!("section_{:0width$}", idx + 1, width = width);
+        }
+        section.output_path = match filename_scheme {
+            FilenameScheme::Legacy => {
+                format!("{:0width$}_{}.md", idx + 1, section_slug, width = width)
+            }
+            FilenameScheme::Stable => format!("{}_{}.md", section.section_id, section_slug),
+        };
+    }
+}
+
+fn rewrite_section_links(sections: &mut [SectionRecord], split_chapters: bool) -> (usize, usize) {
+    let mut href_to_section: HashMap<String, usize> = HashMap::new();
+    let mut anchor_to_section: HashMap<(String, String), usize> = HashMap::new();
+    for (idx, section) in sections.iter().enumerate() {
+        href_to_section
+            .entry(section.start_href.clone())
+            .or_insert(idx);
+        if let Some(fragment) = &section.start_fragment {
+            anchor_to_section.insert((section.start_href.clone(), fragment.clone()), idx);
+        }
+        for anchor in &section.anchors {
+            anchor_to_section.insert((section.start_href.clone(), anchor.clone()), idx);
+        }
+    }
+
+    let mut link_rewritten = 0usize;
+    let mut link_unresolved = 0usize;
+    for idx in 0..sections.len() {
+        let base_href = sections[idx].start_href.clone();
+        let replacer = |target: &str| -> (String, bool) {
+            let Some((target_href, fragment)) = resolve_internal_target(target, &base_href) else {
+                return (target.to_string(), true);
+            };
+            let mut target_idx = None;
+            if let Some(frag) = &fragment {
+                target_idx = anchor_to_section
+                    .get(&(target_href.clone(), frag.clone()))
+                    .copied();
+            }
+            if target_idx.is_none() {
+                target_idx = href_to_section.get(&target_href).copied();
+            }
+            let Some(target_idx) = target_idx else {
+                return (target.to_string(), false);
+            };
+            if split_chapters {
+                if target_idx == idx {
+                    if let Some(frag) = fragment {
+                        return (format!("#{frag}"), true);
+                    }
+                    return (format!("./{}", sections[target_idx].output_path), true);
+                }
+                let mut out = format!("./{}", sections[target_idx].output_path);
+                if let Some(frag) = fragment {
+                    out.push('#');
+                    out.push_str(&frag);
+                }
+                return (out, true);
+            }
+            if let Some(frag) = fragment {
+                return (format!("#{frag}"), true);
+            }
+            (format!("#{}", sections[target_idx].section_id), true)
+        };
+        let (rewritten_md, md_rw, md_unresolved) =
+            replace_markdown_links(&sections[idx].text, replacer);
+        let (rewritten_html, html_rw, html_unresolved) =
+            replace_html_links(&rewritten_md, replacer);
+        sections[idx].text = rewritten_html;
+        link_rewritten += md_rw + html_rw;
+        link_unresolved += md_unresolved + html_unresolved;
+    }
+    (link_rewritten, link_unresolved)
+}
+
+fn apply_notes_mode_to_sections(
+    sections: &mut [SectionRecord],
+    notes_mode: NotesMode,
+) -> (usize, Vec<String>) {
+    if notes_mode == NotesMode::Inline {
+        return (0, Vec::new());
+    }
+    let mut notes_written = 0usize;
+    let mut global_note_lines: Vec<String> = Vec::new();
+    for section in sections {
+        let (stripped, notes) = extract_markdown_footnotes(&section.text);
+        if notes.is_empty() {
+            continue;
+        }
+        let mut id_map: HashMap<String, String> = HashMap::new();
+        for (idx, (note_id, _)) in notes.iter().enumerate() {
+            id_map.insert(
+                note_id.clone(),
+                format!("note-{}-{:03}", section.section_id, idx + 1),
+            );
+        }
+        section.text = rewrite_note_refs(&stripped, &id_map);
+        let rendered_defs: Vec<String> = notes
+            .iter()
+            .map(|(note_id, text)| {
+                format!("[^{}]: {}", id_map.get(note_id).unwrap_or(note_id), text)
+            })
+            .collect();
+        notes_written += rendered_defs.len();
+        match notes_mode {
+            NotesMode::Inline => {}
+            NotesMode::ChapterEnd => {
+                section.text = format!(
+                    "{}\n\n### Notes\n\n{}",
+                    section.text.trim(),
+                    rendered_defs.join("\n")
+                );
+            }
+            NotesMode::Global => {
+                global_note_lines.push(format!("## {} ({})", section.title, section.section_id));
+                global_note_lines.push(String::new());
+                global_note_lines.extend(rendered_defs);
+                global_note_lines.push(String::new());
+            }
+        }
+    }
+    (notes_written, global_note_lines)
+}
+
+fn postprocess_sections(
+    sections: &mut [SectionRecord],
+    split_chapters: bool,
+    filename_scheme: FilenameScheme,
+    book_slug: &str,
+    ocr_cleanup: OcrCleanupMode,
+    notes_mode: NotesMode,
+) -> PostprocessStats {
+    let mut stats = PostprocessStats::default();
+    for section in sections.iter_mut() {
+        section.section_id = build_section_id(
+            &section.start_href,
+            section.start_fragment.as_deref(),
+            section.end_href.as_deref(),
+            section.end_fragment.as_deref(),
+        );
+        let (cleaned, changes) = apply_ocr_cleanup(&section.text, ocr_cleanup);
+        section.text = cleaned;
+        stats.cleanup_changes += changes;
+    }
+    assign_section_output_paths(sections, split_chapters, filename_scheme, book_slug);
+    let (rewritten, unresolved) = rewrite_section_links(sections, split_chapters);
+    stats.link_rewritten = rewritten;
+    stats.link_unresolved = unresolved;
+    let (notes_written, global_note_lines) = apply_notes_mode_to_sections(sections, notes_mode);
+    stats.notes_written = notes_written;
+    stats.global_note_lines = global_note_lines;
+    stats
+}
+
+fn write_markdown_outputs(
+    sections: &[SectionRecord],
+    options: &ConvertOptions,
+    output_dir: &Path,
+    book_dir: &Path,
+    book_slug: &str,
+    title: &str,
+    author: Option<&String>,
+    style_header_lines: &[String],
+    global_note_lines: &[String],
+) -> Result<PathBuf> {
+    let output_root = if options.split_chapters {
+        book_dir.to_path_buf()
+    } else {
+        output_dir.to_path_buf()
+    };
+    fs::create_dir_all(&output_root)?;
+
+    let mut base_lines = Vec::new();
+    base_lines.push(format!("# {title}"));
+    if let Some(author) = author {
+        base_lines.push(format!("**Author:** {author}"));
+    }
+    if !style_header_lines.is_empty() {
+        base_lines.push(String::new());
+        base_lines.extend(style_header_lines.to_vec());
+    }
+    base_lines.push(String::new());
+
+    let mut return_path = output_root.clone();
+    if options.split_chapters {
+        if output_root.exists() {
+            for entry in fs::read_dir(&output_root)? {
+                let path = entry?.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
+        for section in sections {
+            let mut lines = base_lines.clone();
+            lines.push(format!("<a id=\"{}\"></a>", section.section_id));
+            lines.push(format!("## {}", section.title));
+            lines.push(String::new());
+            lines.push(section.text.clone());
+            lines.push(String::new());
+            fs::write(
+                output_root.join(&section.output_path),
+                lines.join("\n").trim().to_string() + "\n",
+            )?;
+        }
+    } else {
+        let output_path = output_root.join(format!("{book_slug}.md"));
+        let mut lines = base_lines;
+        for section in sections {
+            lines.push(format!("<a id=\"{}\"></a>", section.section_id));
+            lines.push(format!("## {}", section.title));
+            lines.push(String::new());
+            lines.push(section.text.clone());
+            lines.push(String::new());
+        }
+        if options.notes_mode == NotesMode::Global && !global_note_lines.is_empty() {
+            lines.push("## Notes".to_string());
+            lines.push(String::new());
+            lines.extend(global_note_lines.to_vec());
+        }
+        fs::write(&output_path, lines.join("\n").trim().to_string() + "\n")?;
+        return_path = output_path;
+    }
+
+    if options.notes_mode == NotesMode::Global && !global_note_lines.is_empty() {
+        fs::create_dir_all(book_dir)?;
+        fs::write(
+            book_dir.join("notes.md"),
+            format!("# Notes\n\n{}\n", global_note_lines.join("\n").trim()),
+        )?;
+    }
+    Ok(return_path)
+}
+
+fn write_manifest_export(
+    enabled: ExportMode,
+    book_dir: &Path,
+    title: &str,
+    author: Option<&String>,
+    book_slug: &str,
+    spine_hrefs: &[String],
+    toc_entries: &[TocEntryInfo],
+    sections: &[SectionRecord],
+    extracted_images: &HashMap<String, String>,
+    extracted_media: &HashMap<String, String>,
+    options: &ConvertOptions,
+) -> Result<()> {
+    if enabled != ExportMode::V1 {
+        return Ok(());
+    }
+    fs::create_dir_all(book_dir)?;
+    let sections_json: Vec<serde_json::Value> = sections
+        .iter()
+        .enumerate()
+        .map(|(idx, section)| {
+            json!({
+                "section_id": section.section_id,
+                "order": idx + 1,
+                "title": section.title,
+                "output_path": if options.split_chapters {
+                    format!("{}/{}", book_slug, section.output_path)
+                } else {
+                    section.output_path.clone()
+                },
+                "source_start": {
+                    "href": section.start_href,
+                    "fragment": section.start_fragment,
+                    "spine_index": section.spine_start,
+                },
+                "source_end": {
+                    "href": section.end_href,
+                    "fragment": section.end_fragment,
+                    "spine_index": section.spine_end,
+                },
+                "anchors": section.anchors,
+            })
+        })
+        .collect();
+    let toc_json: Vec<serde_json::Value> = toc_entries
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| {
+            json!({
+                "order": idx,
+                "label": entry.label,
+                "href": entry.href_path,
+                "fragment": entry.fragment
+            })
+        })
+        .collect();
+    let manifest_payload = json!({
+        "schema_version": "v1",
+        "book": {
+            "title": title,
+            "authors": author.cloned().unwrap_or_default(),
+            "slug": book_slug,
+        },
+        "spine": spine_hrefs.iter().enumerate().map(|(idx, href)| {
+            json!({"index": idx, "href": href})
+        }).collect::<Vec<_>>(),
+        "toc_tree": toc_json,
+        "sections": sections_json,
+        "landmarks": [],
+        "page_list": [],
+        "assets": {
+            "images": extracted_images.keys().collect::<Vec<_>>(),
+            "media": extracted_media.keys().collect::<Vec<_>>(),
+        },
+        "build": {
+            "markdown_mode": format!("{:?}", options.markdown_mode),
+            "style": format!("{:?}", options.style),
+            "split_chapters": options.split_chapters,
+            "chapter_fallback": format!("{:?}", options.chapter_fallback),
+            "notes_mode": format!("{:?}", options.notes_mode),
+            "ocr_cleanup": format!("{:?}", options.ocr_cleanup),
+            "nav_cleanup": format!("{:?}", options.nav_cleanup),
+            "filename_scheme": format!("{:?}", options.filename_scheme),
+        }
+    });
+    fs::write(
+        book_dir.join("manifest.v1.json"),
+        serde_json::to_string_pretty(&manifest_payload)? + "\n",
+    )?;
+    Ok(())
+}
+
+fn write_quality_report(
+    enabled: ExportMode,
+    book_dir: &Path,
+    toc_entry_count: usize,
+    toc_unique_count: usize,
+    toc_coverage_ratio: f32,
+    toc_is_degenerate: bool,
+    use_heading_fallback: bool,
+    options: &ConvertOptions,
+    stats: &PostprocessStats,
+    extracted_count: usize,
+    extracted_media_count: usize,
+    nav_removed: usize,
+    warnings: &[String],
+    errors: &[String],
+) -> Result<()> {
+    if enabled != ExportMode::V1 {
+        return Ok(());
+    }
+    fs::create_dir_all(book_dir)?;
+    let report = json!({
+        "toc_stats": {
+            "entries": toc_entry_count,
+            "unique_hrefs": toc_unique_count,
+            "coverage_ratio": toc_coverage_ratio,
+            "degenerate": toc_is_degenerate,
+        },
+        "fallback_stats": {
+            "mode": format!("{:?}", options.chapter_fallback),
+            "used_heading_fallback": use_heading_fallback,
+        },
+        "link_stats": {
+            "rewritten": stats.link_rewritten,
+            "unresolved": stats.link_unresolved,
+        },
+        "asset_stats": {
+            "images_extracted": extracted_count,
+            "media_extracted": extracted_media_count,
+            "missing_assets": warnings.iter().filter(|msg| msg.contains("missing media")).count(),
+        },
+        "ocr_stats": {
+            "mode": format!("{:?}", options.ocr_cleanup),
+            "cleanup_changes": stats.cleanup_changes,
+        },
+        "cleanup_stats": {
+            "nav_cleanup_mode": format!("{:?}", options.nav_cleanup),
+            "toc_entries_removed": nav_removed,
+        },
+        "notes_stats": {
+            "mode": format!("{:?}", options.notes_mode),
+            "notes_written": stats.notes_written,
+        },
+        "warnings": warnings,
+        "errors": errors,
+    });
+    fs::write(
+        book_dir.join("report.v1.json"),
+        serde_json::to_string_pretty(&report)? + "\n",
+    )?;
+    Ok(())
 }
