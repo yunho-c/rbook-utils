@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use rbook_utils::{ChapterFallbackMode, ConvertOptions, MarkdownMode, StyleMode, convert_all};
+use rbook_utils::{
+    ChapterFallbackMode, ConvertOptions, ExportMode, FilenameScheme, MarkdownMode, NavCleanupMode,
+    NotesMode, OcrCleanupMode, StyleMode, convert_all,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "rbook-utils")]
@@ -21,6 +24,18 @@ struct Cli {
     split_chapters: bool,
     #[arg(long, value_enum, default_value_t = ChapterFallbackMode::Auto)]
     chapter_fallback: ChapterFallbackMode,
+    #[arg(long, value_enum, default_value_t = NotesMode::Inline)]
+    notes_mode: NotesMode,
+    #[arg(long, value_enum, default_value_t = ExportMode::Off)]
+    export_manifest: ExportMode,
+    #[arg(long, value_enum, default_value_t = ExportMode::Off)]
+    quality_report: ExportMode,
+    #[arg(long, value_enum, default_value_t = OcrCleanupMode::Off)]
+    ocr_cleanup: OcrCleanupMode,
+    #[arg(long, value_enum, default_value_t = NavCleanupMode::Auto)]
+    nav_cleanup: NavCleanupMode,
+    #[arg(long, value_enum, default_value_t = FilenameScheme::Legacy)]
+    filename_scheme: FilenameScheme,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -31,6 +46,12 @@ fn main() -> anyhow::Result<()> {
     options.style = cli.style;
     options.split_chapters = cli.split_chapters;
     options.chapter_fallback = cli.chapter_fallback;
+    options.notes_mode = cli.notes_mode;
+    options.export_manifest = cli.export_manifest;
+    options.quality_report = cli.quality_report;
+    options.ocr_cleanup = cli.ocr_cleanup;
+    options.nav_cleanup = cli.nav_cleanup;
+    options.filename_scheme = cli.filename_scheme;
 
     convert_all(&options)
 }
