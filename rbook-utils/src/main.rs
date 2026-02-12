@@ -34,7 +34,7 @@ struct Cli {
     ocr_cleanup: OcrCleanupMode,
     #[arg(long, value_enum, default_value_t = NavCleanupMode::Auto)]
     nav_cleanup: NavCleanupMode,
-    #[arg(long, value_enum, default_value_t = FilenameScheme::Legacy)]
+    #[arg(long, value_enum, default_value_t = FilenameScheme::Index)]
     filename_scheme: FilenameScheme,
 }
 
@@ -53,5 +53,43 @@ fn main() -> anyhow::Result<()> {
     options.nav_cleanup = cli.nav_cleanup;
     options.filename_scheme = cli.filename_scheme;
 
-    convert_all(&options)
+    let summary = convert_all(&options)?;
+    let mut failures = 0usize;
+    for book in &summary.books {
+        let mut has_error = false;
+        for diagnostic in &book.diagnostics {
+            match diagnostic.level {
+                rbook_utils::DiagnosticLevel::Info => {
+                    println!("{}", diagnostic.message);
+                }
+                rbook_utils::DiagnosticLevel::Warning => {
+                    eprintln!("Warning: {}", diagnostic.message);
+                }
+                rbook_utils::DiagnosticLevel::Error => {
+                    has_error = true;
+                    eprintln!("Error: {}", diagnostic.message);
+                }
+            }
+        }
+
+        if let Some(path) = &book.output_path {
+            if options.split_chapters {
+                println!("Wrote chapter files to {}", path.display());
+            } else {
+                println!("Wrote {}", path.display());
+            }
+        } else {
+            has_error = true;
+        }
+
+        if has_error {
+            failures += 1;
+        }
+    }
+
+    if failures > 0 {
+        anyhow::bail!("{failures} EPUB(s) failed to parse");
+    }
+
+    Ok(())
 }

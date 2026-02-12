@@ -63,8 +63,8 @@ pub enum NavCleanupMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum FilenameScheme {
-    Legacy,
-    Stable,
+    Index,
+    Hash,
 }
 
 #[derive(Clone, Debug)]
@@ -99,8 +99,47 @@ impl ConvertOptions {
             quality_report: ExportMode::Off,
             ocr_cleanup: OcrCleanupMode::Off,
             nav_cleanup: NavCleanupMode::Auto,
-            filename_scheme: FilenameScheme::Legacy,
+            filename_scheme: FilenameScheme::Index,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagnosticLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug)]
+pub struct Diagnostic {
+    pub level: DiagnosticLevel,
+    pub message: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct BookConversionResult {
+    pub input_path: PathBuf,
+    pub title: String,
+    pub output_path: Option<PathBuf>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ConversionSummary {
+    pub books: Vec<BookConversionResult>,
+}
+
+impl ConversionSummary {
+    pub fn failure_count(&self) -> usize {
+        self.books
+            .iter()
+            .filter(|book| book.output_path.is_none())
+            .count()
+    }
+
+    pub fn success_count(&self) -> usize {
+        self.books.len().saturating_sub(self.failure_count())
     }
 }
 
@@ -186,7 +225,7 @@ static HTML_HREF_RE: Lazy<Regex> = Lazy::new(|| {
 static FOOTNOTE_DEF_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\[\^([^\]]+)\]:\s*(.*)$").expect("valid footnote regex"));
 
-pub fn convert_all(options: &ConvertOptions) -> Result<()> {
+pub fn convert_all(options: &ConvertOptions) -> Result<ConversionSummary> {
     let mut epub_paths = Vec::new();
     for entry in WalkDir::new(&options.input_dir)
         .follow_links(false)
@@ -205,22 +244,42 @@ pub fn convert_all(options: &ConvertOptions) -> Result<()> {
         anyhow::bail!("No EPUB files found under {}", options.input_dir.display());
     }
 
-    let mut failures = 0;
+    let mut summary = ConversionSummary::default();
     for epub_path in epub_paths {
-        if let Err(err) = convert_epub(&epub_path, options) {
-            failures += 1;
-            eprintln!("Failed to parse {}: {err}", epub_path.display());
+        match convert_epub_result(&epub_path, options) {
+            Ok(result) => summary.books.push(result),
+            Err(err) => {
+                summary.books.push(BookConversionResult {
+                    input_path: epub_path.clone(),
+                    title: epub_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("book")
+                        .to_string(),
+                    output_path: None,
+                    diagnostics: vec![Diagnostic {
+                        level: DiagnosticLevel::Error,
+                        message: format!("Failed to parse {}: {err}", epub_path.display()),
+                    }],
+                });
+            }
         }
     }
 
-    if failures > 0 {
-        anyhow::bail!("{failures} EPUB(s) failed to parse");
-    }
-
-    Ok(())
+    Ok(summary)
 }
 
 pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBuf> {
+    let result = convert_epub_result(epub_path, options)?;
+    result
+        .output_path
+        .ok_or_else(|| anyhow::anyhow!("No output path generated for {}", epub_path.display()))
+}
+
+pub fn convert_epub_result(
+    epub_path: &Path,
+    options: &ConvertOptions,
+) -> Result<BookConversionResult> {
     let epub = Epub::open(epub_path)
         .with_context(|| format!("Failed to open epub {}", epub_path.display()))?;
 
@@ -274,8 +333,7 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
     let mut errors: Vec<String> = Vec::new();
 
     let mut warn = |message: String| {
-        eprintln!("Warning: {message}");
-        warnings.push(format!("Warning: {message}"));
+        warnings.push(message);
     };
 
     if options.media_all {
@@ -654,13 +712,6 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
         &stats.global_note_lines,
     )?;
 
-    if extracted_count > 0 {
-        println!("Extracted {extracted_count} images for {title}");
-    }
-    if extracted_media_count > 0 {
-        println!("Extracted {extracted_media_count} media files for {title}");
-    }
-
     write_manifest_export(
         options.export_manifest,
         &book_dir,
@@ -691,7 +742,34 @@ pub fn convert_epub(epub_path: &Path, options: &ConvertOptions) -> Result<PathBu
         &errors,
     )?;
 
-    Ok(return_path)
+    let mut diagnostics = Vec::new();
+    if extracted_count > 0 {
+        diagnostics.push(Diagnostic {
+            level: DiagnosticLevel::Info,
+            message: format!("Extracted {extracted_count} images for {title}"),
+        });
+    }
+    if extracted_media_count > 0 {
+        diagnostics.push(Diagnostic {
+            level: DiagnosticLevel::Info,
+            message: format!("Extracted {extracted_media_count} media files for {title}"),
+        });
+    }
+    diagnostics.extend(warnings.into_iter().map(|message| Diagnostic {
+        level: DiagnosticLevel::Warning,
+        message,
+    }));
+    diagnostics.extend(errors.into_iter().map(|message| Diagnostic {
+        level: DiagnosticLevel::Error,
+        message,
+    }));
+
+    Ok(BookConversionResult {
+        input_path: epub_path.to_path_buf(),
+        title,
+        output_path: Some(return_path),
+        diagnostics,
+    })
 }
 
 fn build_toc_entries(epub: &Epub) -> Result<Vec<TocEntryInfo>> {
@@ -1773,10 +1851,10 @@ fn assign_section_output_paths(
             section_slug = format!("section_{:0width$}", idx + 1, width = width);
         }
         section.output_path = match filename_scheme {
-            FilenameScheme::Legacy => {
+            FilenameScheme::Index => {
                 format!("{:0width$}_{}.md", idx + 1, section_slug, width = width)
             }
-            FilenameScheme::Stable => format!("{}_{}.md", section.section_id, section_slug),
+            FilenameScheme::Hash => format!("{}_{}.md", section.section_id, section_slug),
         };
     }
 }
