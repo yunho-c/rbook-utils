@@ -1,14 +1,25 @@
 [package]
+authors = ["Yunho Cho"]
 name = "rbook-utils"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
+description = """
+A high-level wrapper over `rbook` for easy ebook parsing/conversion/rendering
+"""
+license = "MIT"
+repository = "https://github.com/yunho-c/rbook-utils"
+homepage = "https://yunho-c.github.io/rbook"
+documentation = "https://docs.rs/rbook-utils"
+readme = "README.md"
+categories = ["parser-implementations"]
+keywords = ["ebook", "epub", "parser", "markdown", "cli"]
 
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 html2md = "0.2"
 kuchiki = "0.8"
-rbook = { path = "../../rbook" }
+rbook = "0.6.12"
 urlencoding = "2.1"
 walkdir = "2.5"
 regex = "1.11"
