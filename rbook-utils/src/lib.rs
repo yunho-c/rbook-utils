@@ -1,10 +1,6 @@
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
-use rbook::ebook::manifest::Manifest;
-use rbook::ebook::spine::Spine;
-use rbook::ebook::toc::{Toc, TocChildren, TocEntry};
-use rbook::prelude::{ManifestEntry, MetaEntry, Metadata, SpineEntry};
-use rbook::{Ebook, Epub};
+use rbook::Epub;
 use regex::Regex;
 use serde_json::json;
 use sha1::{Digest, Sha1};
@@ -348,8 +344,8 @@ pub fn convert_epub_result(
                 &mut extracted_count,
             );
         }
-        for entry in epub.manifest().entries() {
-            let kind = entry.resource_kind();
+        for entry in epub.manifest().iter() {
+            let kind = entry.kind();
             if !(kind.is_audio() || kind.is_video()) {
                 continue;
             }
@@ -383,7 +379,7 @@ pub fn convert_epub_result(
     let (toc_entries, nav_removed) = cleanup_toc_entries(toc_entries_raw, options.nav_cleanup);
     let spine_hrefs: Vec<String> = epub
         .spine()
-        .entries()
+        .iter()
         .filter_map(|entry| entry.manifest_entry())
         .filter(|entry| is_readable(entry.media_type()))
         .map(|entry| entry.href().as_str().to_string())
@@ -617,7 +613,7 @@ pub fn convert_epub_result(
             }
         }
     } else if !use_heading_fallback {
-        for spine_entry in epub.spine().entries() {
+        for spine_entry in epub.spine().iter() {
             if let Some(manifest_entry) = spine_entry.manifest_entry() {
                 if !is_readable(manifest_entry.media_type()) {
                     continue;
@@ -775,7 +771,7 @@ pub fn convert_epub_result(
 fn build_toc_entries(epub: &Epub) -> Result<Vec<TocEntryInfo>> {
     let mut entries = Vec::new();
     if let Some(root) = epub.toc().contents() {
-        for entry in root.children().flatten() {
+        for entry in root.flatten() {
             let href = match entry.href() {
                 Some(href) => href,
                 None => continue,
