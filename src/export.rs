@@ -9,7 +9,7 @@ use super::{ConvertOptions, ExportMode, NotesMode, PostprocessStats, SectionReco
 pub(super) fn write_markdown_outputs(
     sections: &[SectionRecord],
     options: &ConvertOptions,
-    output_dir: &Path,
+    output: &Path,
     book_dir: &Path,
     book_slug: &str,
     title: &str,
@@ -20,7 +20,7 @@ pub(super) fn write_markdown_outputs(
     let output_root = if options.split_chapters {
         book_dir.to_path_buf()
     } else {
-        output_dir.to_path_buf()
+        output.to_path_buf()
     };
     fs::create_dir_all(&output_root)?;
 

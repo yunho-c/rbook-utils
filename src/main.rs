@@ -11,9 +11,9 @@ use rbook_utils::{
 #[command(about = "EPUB to Markdown conversion powered by rbook")]
 struct Cli {
     #[arg(long, default_value = "assets")]
-    input_dir: PathBuf,
+    input: PathBuf,
     #[arg(long, default_value = "rbook-utils/results")]
-    output_dir: PathBuf,
+    output: PathBuf,
     #[arg(long)]
     media_all: bool,
     #[arg(long, value_enum, default_value_t = MarkdownMode::Plain)]
@@ -40,7 +40,7 @@ struct Cli {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let mut options = ConvertOptions::new(cli.input_dir, cli.output_dir);
+    let mut options = ConvertOptions::new(cli.input, cli.output);
     options.media_all = cli.media_all;
     options.markdown_mode = cli.markdown_mode;
     options.style = cli.style;

@@ -79,8 +79,8 @@ pub enum FilenameScheme {
 
 #[derive(Clone, Debug)]
 pub struct ConvertOptions {
-    pub input_dir: PathBuf,
-    pub output_dir: PathBuf,
+    pub input: PathBuf,
+    pub output: PathBuf,
     pub media_all: bool,
     pub markdown_mode: MarkdownMode,
     pub style: StyleMode,
@@ -95,10 +95,10 @@ pub struct ConvertOptions {
 }
 
 impl ConvertOptions {
-    pub fn new(input_dir: PathBuf, output_dir: PathBuf) -> Self {
+    pub fn new(input: PathBuf, output: PathBuf) -> Self {
         Self {
-            input_dir,
-            output_dir,
+            input,
+            output,
             media_all: false,
             markdown_mode: MarkdownMode::Plain,
             style: StyleMode::Inline,
@@ -241,23 +241,7 @@ static FOOTNOTE_DEF_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^\[\^([^\]]+)\]:\s*(.*)$").expect("valid footnote regex"));
 
 pub fn convert_all(options: &ConvertOptions) -> Result<ConversionSummary> {
-    let mut epub_paths = Vec::new();
-    for entry in WalkDir::new(&options.input_dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-    {
-        if entry.file_type().is_file() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) == Some("epub") {
-                epub_paths.push(path.to_path_buf());
-            }
-        }
-    }
-
-    if epub_paths.is_empty() {
-        anyhow::bail!("No EPUB files found under {}", options.input_dir.display());
-    }
+    let epub_paths = collect_input_epubs(&options.input)?;
 
     let mut summary = ConversionSummary::default();
     for epub_path in epub_paths {
@@ -317,7 +301,7 @@ pub fn convert_epub_result(
         .map(|c| c.value().to_string());
 
     let book_slug = slugify(&title);
-    let book_dir = options.output_dir.join(&book_slug);
+    let book_dir = options.output.join(&book_slug);
     let image_root = book_dir.join("images");
     let media_root = book_dir.join("media");
     let style_root = book_dir.join("styles");
@@ -702,7 +686,7 @@ pub fn convert_epub_result(
     let return_path = write_markdown_outputs(
         &sections,
         options,
-        &options.output_dir,
+        &options.output,
         &book_dir,
         &book_slug,
         &title,
@@ -788,6 +772,48 @@ fn toc_degeneracy_stats(
     };
     let is_degenerate = toc_entry_count <= 1 || unique_count < 3 || coverage_ratio < 0.15;
     (is_degenerate, toc_entry_count, unique_count, coverage_ratio)
+}
+
+fn collect_input_epubs(input: &Path) -> Result<Vec<PathBuf>> {
+    let metadata = std::fs::metadata(input)
+        .with_context(|| format!("Failed to access {}", input.display()))?;
+
+    if metadata.is_file() {
+        if input.extension().and_then(|ext| ext.to_str()) == Some("epub") {
+            return Ok(vec![input.to_path_buf()]);
+        }
+        anyhow::bail!(
+            "Input path {} is a file, but not an .epub file",
+            input.display()
+        );
+    }
+
+    if !metadata.is_dir() {
+        anyhow::bail!(
+            "Input path {} is neither a regular file nor a directory",
+            input.display()
+        );
+    }
+
+    let mut epub_paths = Vec::new();
+    for entry in WalkDir::new(input)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        if entry.file_type().is_file() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("epub") {
+                epub_paths.push(path.to_path_buf());
+            }
+        }
+    }
+
+    if epub_paths.is_empty() {
+        anyhow::bail!("No EPUB files found under {}", input.display());
+    }
+
+    Ok(epub_paths)
 }
 
 fn normalize_space(text: &str) -> String {
