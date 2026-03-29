@@ -4,7 +4,7 @@
 [![Documentation](https://img.shields.io/badge/documentation-latest%20release-19e.svg?logo=docs.rs&style=flat-square)](https://docs.rs/rbook-utils)
 [![License](https://img.shields.io/badge/license-Apache%202.0-maroon?logo=apache&style=flat-square)](LICENSE)
 
-`rbook-utils` is a high-level wrapper over `rbook` — to conveniently parse, convert, and render ebooks for downstream consumption (e.g., Markdown).
+`rbook-utils` is a high-level wrapper over `rbook` — to conveniently parse, convert, and render ebooks for downstream consumption (e.g., into Markdown).
 
 ## Demo
 
@@ -20,7 +20,7 @@
 use std::path::PathBuf;
 
 use rbook_utils::{
-    convert_all, ChapterFallbackMode, ConvertOptions, FilenameScheme, MarkdownMode,
+    convert_all, ChapterFallbackMode, ConvertOptions, FilenameScheme, MarkdownMode, MediaMode,
     NotesMode, StyleMode,
 };
 
@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
 
     options.markdown_mode = MarkdownMode::Rich;
     options.style = StyleMode::Inline;
-    options.media_all = true;
+    options.media = MediaMode::All;
     options.split_chapters = true;
     options.chapter_fallback = ChapterFallbackMode::Auto;
     options.notes_mode = NotesMode::ChapterEnd;
@@ -51,7 +51,7 @@ fn main() -> anyhow::Result<()> {
 ### CLI
 
 ```bash
-cargo run -- --input assets --output results --markdown-mode rich --style inline --media-all --split-chapters
+cargo run -- --input assets --output results --markdown-mode rich --style inline --media all --split-chapters
 ```
 
 ## Options
@@ -60,7 +60,7 @@ cargo run -- --input assets --output results --markdown-mode rich --style inline
 | --- | --- | --- | --- |
 | `--input` | path | `assets` | Input EPUB file or directory to scan recursively for `.epub` files. |
 | `--output` | path | `rbook-utils/results` | Root output location for generated Markdown and extracted assets. |
-| `--media-all` | flag | `false` | Extract audio and video assets in addition to the images encountered during conversion. |
+| `--media` | `none`, `image`, `all` | `image` | Choose whether to extract no media, referenced images only, or images plus manifest audio/video. |
 | `--markdown-mode` | `plain`, `rich` | `plain` | Output plain Markdown or preserve richer HTML where needed. |
 | `--style` | `inline`, `external` | `inline` | For rich output, embed stylesheet content inline or write linked CSS files. |
 | `--split-chapters` | flag | `false` | Write one Markdown file per section/chapter instead of a single combined file. |

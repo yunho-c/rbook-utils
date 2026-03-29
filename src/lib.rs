@@ -77,11 +77,18 @@ pub enum FilenameScheme {
     Hash,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum MediaMode {
+    None,
+    Image,
+    All,
+}
+
 #[derive(Clone, Debug)]
 pub struct ConvertOptions {
     pub input: PathBuf,
     pub output: PathBuf,
-    pub media_all: bool,
+    pub media: MediaMode,
     pub markdown_mode: MarkdownMode,
     pub style: StyleMode,
     pub split_chapters: bool,
@@ -99,7 +106,7 @@ impl ConvertOptions {
         Self {
             input,
             output,
-            media_all: false,
+            media: MediaMode::Image,
             markdown_mode: MarkdownMode::Plain,
             style: StyleMode::Inline,
             split_chapters: false,
@@ -335,7 +342,7 @@ pub fn convert_epub_result(
         warnings.push(message);
     };
 
-    if options.media_all {
+    if options.media == MediaMode::All {
         for href in collect_image_hrefs(&epub) {
             let _ = extract_image(
                 &epub,
@@ -361,15 +368,18 @@ pub fn convert_epub_result(
     let mut content_cache: HashMap<String, ContentDoc> = HashMap::new();
 
     let mut image_resolver = |src: &str, base_href: &str| -> Option<String> {
-        resolve_and_extract_image(
-            &epub,
-            src,
-            base_href,
-            &image_root,
-            &image_link_prefix,
-            &mut extracted_images,
-            &mut extracted_count,
-        )
+        match options.media {
+            MediaMode::None => Some(src.to_string()),
+            MediaMode::Image | MediaMode::All => resolve_and_extract_image(
+                &epub,
+                src,
+                base_href,
+                &image_root,
+                &image_link_prefix,
+                &mut extracted_images,
+                &mut extracted_count,
+            ),
+        }
     };
 
     let toc_entries_raw = collect_toc_entries(&epub);

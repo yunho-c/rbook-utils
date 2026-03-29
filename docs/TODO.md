@@ -111,7 +111,7 @@ Status:
 
 Scope:
 - Preserve existing image behavior.
-- Expand `--media-all` to include optional audio/video extraction.
+- Expand `--media` to support optional audio/video extraction.
 - Keep external/data URIs unchanged.
 - Add richer in-content asset reference handling:
   - `srcset`
@@ -121,7 +121,7 @@ Scope:
 
 Acceptance:
 - Image extraction remains backward compatible.
-- Audio/video extracted when discoverable from manifest and `--media-all` is enabled.
+- Audio/video extracted when discoverable from manifest and `--media all` is enabled.
 - Richer asset refs resolve/extract with path rewriting in both split and single-file modes.
 
 ## M6: Typography/Semantics Normalization

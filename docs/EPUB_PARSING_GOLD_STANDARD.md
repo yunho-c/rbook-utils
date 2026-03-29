@@ -127,9 +127,11 @@ For every image reference encountered during conversion:
    - `./<book_slug>/images/<resolved_href>`
 7. Deduplicate with an in-memory `extracted[href]` map.
 
-`--media-all` behavior:
+`--media` behavior:
 
-- In addition to referenced images, extract all manifest images (`media_type` starts with `image/`).
+- `none`: do not extract images, audio, or video; keep local in-content image references unchanged.
+- `image`: extract referenced images encountered during conversion.
+- `all`: in addition to referenced images, extract all manifest images and discoverable manifest audio/video.
 
 ## 7) CSS handling (rich mode only)
 
@@ -193,9 +195,9 @@ Post-processing:
 
 Common controls used by both implementations:
 
-- `--input-dir`
-- `--output-dir`
-- `--media-all`
+- `--input`
+- `--output`
+- `--media`
 - `--markdown-mode plain|rich`
 - `--style inline|external`
 - `--split-chapters`

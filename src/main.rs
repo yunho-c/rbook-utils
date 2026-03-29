@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use rbook_utils::{
-    ChapterFallbackMode, ConvertOptions, ExportMode, FilenameScheme, MarkdownMode, NavCleanupMode,
-    NotesMode, OcrCleanupMode, StyleMode, convert_all,
+    ChapterFallbackMode, ConvertOptions, ExportMode, FilenameScheme, MarkdownMode, MediaMode,
+    NavCleanupMode, NotesMode, OcrCleanupMode, StyleMode, convert_all,
 };
 
 #[derive(Parser, Debug)]
@@ -14,8 +14,8 @@ struct Cli {
     input: PathBuf,
     #[arg(long, default_value = "rbook-utils/results")]
     output: PathBuf,
-    #[arg(long)]
-    media_all: bool,
+    #[arg(long, value_enum, default_value_t = MediaMode::Image)]
+    media: MediaMode,
     #[arg(long, value_enum, default_value_t = MarkdownMode::Plain)]
     markdown_mode: MarkdownMode,
     #[arg(long, value_enum, default_value_t = StyleMode::Inline)]
@@ -41,7 +41,7 @@ struct Cli {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let mut options = ConvertOptions::new(cli.input, cli.output);
-    options.media_all = cli.media_all;
+    options.media = cli.media;
     options.markdown_mode = cli.markdown_mode;
     options.style = cli.style;
     options.split_chapters = cli.split_chapters;
