@@ -20,8 +20,8 @@
 use std::path::PathBuf;
 
 use rbook_utils::{
-    convert_all, ChapterFallbackMode, ConvertOptions, FilenameScheme, MarkdownMode, MediaMode,
-    NotesMode, StyleMode,
+    convert_all, ChapterFallbackMode, ConvertOptions, CssMode, FilenameScheme, FormatMode,
+    MediaMode, NotesMode,
 };
 
 fn main() -> anyhow::Result<()> {
@@ -30,8 +30,8 @@ fn main() -> anyhow::Result<()> {
         PathBuf::from("results"),
     );
 
-    options.markdown_mode = MarkdownMode::Rich;
-    options.style = StyleMode::Inline;
+    options.format = FormatMode::Rich;
+    options.css = CssMode::Inline;
     options.media = MediaMode::All;
     options.split_chapters = true;
     options.chapter_fallback = ChapterFallbackMode::Auto;
@@ -51,7 +51,7 @@ fn main() -> anyhow::Result<()> {
 ### CLI
 
 ```bash
-cargo run -- --input assets --output results --markdown-mode rich --style inline --media all --split-chapters
+cargo run -- --input assets --output results --format rich --css inline --media all --split-chapters
 ```
 
 ## Options
@@ -61,14 +61,14 @@ cargo run -- --input assets --output results --markdown-mode rich --style inline
 | `--input` | path | `assets` | Input EPUB file or directory to scan recursively for `.epub` files. |
 | `--output` | path | `rbook-utils/results` | Root output location for generated Markdown and extracted assets. |
 | `--media` | `none`, `image`, `all` | `image` | Choose whether to extract no media, referenced images only, or images plus manifest audio/video. |
-| `--markdown-mode` | `plain`, `rich` | `plain` | Output plain Markdown or preserve richer HTML where needed. |
-| `--style` | `inline`, `external` | `inline` | For rich output, embed stylesheet content inline or write linked CSS files. |
+| `--format` | `plain`, `rich` | `plain` | Output plain Markdown or preserve richer HTML where needed. |
 | `--split-chapters` | flag | `false` | Write one Markdown file per section/chapter instead of a single combined file. |
 
 ### Advanced
 
 | Option | Values | Default | Description |
 | --- | --- | --- | --- |
+| `--css` | `inline`, `external` | `inline` | For rich output, embed stylesheet content inline or write linked CSS files. |
 | `--chapter-fallback` | `off`, `auto`, `force` | `auto` | Control whether chapter boundaries are inferred from headings when TOC segmentation is weak. |
 | `--notes-mode` | `inline`, `chapter-end`, `global` | `inline` | Keep footnotes inline, move them to each chapter end, or emit a global notes section/file. |
 | `--export-manifest` | `off`, `v1` | `off` | Write `manifest.v1.json` with source-to-output mapping and asset metadata. |

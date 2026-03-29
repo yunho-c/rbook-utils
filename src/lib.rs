@@ -27,13 +27,13 @@ use render::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub enum MarkdownMode {
+pub enum FormatMode {
     Plain,
     Rich,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub enum StyleMode {
+pub enum CssMode {
     Inline,
     External,
 }
@@ -89,8 +89,8 @@ pub struct ConvertOptions {
     pub input: PathBuf,
     pub output: PathBuf,
     pub media: MediaMode,
-    pub markdown_mode: MarkdownMode,
-    pub style: StyleMode,
+    pub format: FormatMode,
+    pub css: CssMode,
     pub split_chapters: bool,
     pub chapter_fallback: ChapterFallbackMode,
     pub notes_mode: NotesMode,
@@ -107,8 +107,8 @@ impl ConvertOptions {
             input,
             output,
             media: MediaMode::Image,
-            markdown_mode: MarkdownMode::Plain,
-            style: StyleMode::Inline,
+            format: FormatMode::Plain,
+            css: CssMode::Inline,
             split_chapters: false,
             chapter_fallback: ChapterFallbackMode::Auto,
             notes_mode: NotesMode::Inline,
@@ -471,12 +471,12 @@ pub fn convert_epub_result(
                             continue;
                         }
                     };
-                    if options.markdown_mode == MarkdownMode::Rich {
+                    if options.format == FormatMode::Rich {
                         collect_css(content, href, &mut css_hrefs, &mut inline_styles);
                     }
                     let (part, part_anchors) = render_partial_with_anchors(
                         content,
-                        options.markdown_mode,
+                        options.format,
                         None,
                         None,
                         &mut image_resolver,
@@ -550,7 +550,7 @@ pub fn convert_epub_result(
                         continue;
                     }
                 };
-                if options.markdown_mode == MarkdownMode::Rich {
+                if options.format == FormatMode::Rich {
                     collect_css(content, href, &mut css_hrefs, &mut inline_styles);
                 }
 
@@ -578,7 +578,7 @@ pub fn convert_epub_result(
 
                 let (part, part_anchors) = render_partial_with_anchors(
                     content,
-                    options.markdown_mode,
+                    options.format,
                     start_fragment,
                     end_fragment,
                     &mut image_resolver,
@@ -625,12 +625,12 @@ pub fn convert_epub_result(
                     continue;
                 }
             };
-            if options.markdown_mode == MarkdownMode::Rich {
+            if options.format == FormatMode::Rich {
                 collect_css(content, &href_path, &mut css_hrefs, &mut inline_styles);
             }
             let (text_opt, anchors) = render_partial_with_anchors(
                 content,
-                options.markdown_mode,
+                options.format,
                 None,
                 None,
                 &mut image_resolver,
@@ -680,14 +680,14 @@ pub fn convert_epub_result(
         ));
     }
 
-    let style_header_lines = if options.markdown_mode == MarkdownMode::Rich {
+    let style_header_lines = if options.format == FormatMode::Rich {
         build_style_header(
             &epub,
             &css_hrefs,
             &inline_styles,
             &style_root,
             &style_link_prefix,
-            options.style,
+            options.css,
         )?
     } else {
         Vec::new()

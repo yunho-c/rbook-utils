@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use rbook_utils::{
-    ChapterFallbackMode, ConvertOptions, ExportMode, FilenameScheme, MarkdownMode, MediaMode,
-    NavCleanupMode, NotesMode, OcrCleanupMode, StyleMode, convert_all,
+    ChapterFallbackMode, ConvertOptions, CssMode, ExportMode, FilenameScheme, FormatMode,
+    MediaMode, NavCleanupMode, NotesMode, OcrCleanupMode, convert_all,
 };
 
 #[derive(Parser, Debug)]
@@ -16,10 +16,10 @@ struct Cli {
     output: PathBuf,
     #[arg(long, value_enum, default_value_t = MediaMode::Image)]
     media: MediaMode,
-    #[arg(long, value_enum, default_value_t = MarkdownMode::Plain)]
-    markdown_mode: MarkdownMode,
-    #[arg(long, value_enum, default_value_t = StyleMode::Inline)]
-    style: StyleMode,
+    #[arg(long, value_enum, default_value_t = FormatMode::Plain)]
+    format: FormatMode,
+    #[arg(long, value_enum, default_value_t = CssMode::Inline)]
+    css: CssMode,
     #[arg(long)]
     split_chapters: bool,
     #[arg(long, value_enum, default_value_t = ChapterFallbackMode::Auto)]
@@ -42,8 +42,8 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let mut options = ConvertOptions::new(cli.input, cli.output);
     options.media = cli.media;
-    options.markdown_mode = cli.markdown_mode;
-    options.style = cli.style;
+    options.format = cli.format;
+    options.css = cli.css;
     options.split_chapters = cli.split_chapters;
     options.chapter_fallback = cli.chapter_fallback;
     options.notes_mode = cli.notes_mode;

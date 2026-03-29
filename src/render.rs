@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use super::{
-    COMPLEX_HTML_TAGS, ContentDoc, MarkdownMode, StyleMode, decode_path, is_external, resolve_href,
+    COMPLEX_HTML_TAGS, ContentDoc, CssMode, FormatMode, decode_path, is_external, resolve_href,
 };
 
 pub(super) fn collect_css(
@@ -46,15 +46,15 @@ pub(super) fn build_style_header(
     inline_styles: &[String],
     styles_root: &Path,
     style_link_prefix: &str,
-    style_mode: StyleMode,
+    css_mode: CssMode,
 ) -> Result<Vec<String>> {
     let mut lines = Vec::new();
     if css_hrefs.is_empty() && inline_styles.is_empty() {
         return Ok(lines);
     }
 
-    match style_mode {
-        StyleMode::External => {
+    match css_mode {
+        CssMode::External => {
             for href in css_hrefs.iter().collect::<Vec<_>>() {
                 let bytes = epub.read_resource_bytes(href.as_str())?;
                 let relative = decode_path(href);
@@ -77,7 +77,7 @@ pub(super) fn build_style_header(
                 ));
             }
         }
-        StyleMode::Inline => {
+        CssMode::Inline => {
             let mut css_chunks = Vec::new();
             for href in css_hrefs.iter().collect::<Vec<_>>() {
                 let bytes = epub.read_resource_bytes(href.as_str())?;
@@ -98,14 +98,14 @@ pub(super) fn build_style_header(
 
 pub(super) fn render_partial_with_anchors(
     content: &ContentDoc,
-    markdown_mode: MarkdownMode,
+    format: FormatMode,
     start_fragment: Option<&str>,
     end_fragment: Option<&str>,
     image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
 ) -> (Option<String>, Vec<String>) {
     if start_fragment.is_none() && end_fragment.is_none() {
         return (
-            render_full_content(content, markdown_mode, image_resolver),
+            render_full_content(content, format, image_resolver),
             collect_anchors_from_content(content),
         );
     }
@@ -147,7 +147,7 @@ pub(super) fn render_partial_with_anchors(
     }
     let nodes = &children[start_idx..end_idx];
     (
-        render_nodes_for_mode(nodes, content, markdown_mode, image_resolver),
+        render_nodes_for_mode(nodes, content, format, image_resolver),
         collect_anchors_from_nodes(nodes),
     )
 }
@@ -239,14 +239,14 @@ pub(super) fn extract_media_file(
 
 fn render_full_content(
     content: &ContentDoc,
-    markdown_mode: MarkdownMode,
+    format: FormatMode,
     image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
 ) -> Option<String> {
     if let Ok(body) = content.document.select_first("body") {
         let body = body.as_node().clone();
-        match markdown_mode {
-            MarkdownMode::Plain => render_plain(&body, content, image_resolver),
-            MarkdownMode::Rich => Some(render_rich(&body, content, image_resolver)),
+        match format {
+            FormatMode::Plain => render_plain(&body, content, image_resolver),
+            FormatMode::Rich => Some(render_rich(&body, content, image_resolver)),
         }
     } else {
         None
@@ -293,12 +293,12 @@ fn collect_anchors_from_content(content: &ContentDoc) -> Vec<String> {
 fn render_nodes_for_mode(
     nodes: &[NodeRef],
     content: &ContentDoc,
-    markdown_mode: MarkdownMode,
+    format: FormatMode,
     image_resolver: &mut impl FnMut(&str, &str) -> Option<String>,
 ) -> Option<String> {
-    match markdown_mode {
-        MarkdownMode::Plain => render_nodes_plain(nodes, content, image_resolver),
-        MarkdownMode::Rich => {
+    match format {
+        FormatMode::Plain => render_nodes_plain(nodes, content, image_resolver),
+        FormatMode::Rich => {
             let rich = render_nodes_rich(nodes, content, image_resolver);
             if rich.trim().is_empty() {
                 None

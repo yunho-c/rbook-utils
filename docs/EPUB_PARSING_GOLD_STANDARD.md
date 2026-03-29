@@ -142,8 +142,8 @@ Collect from each processed XHTML:
 
 Two styles:
 
-- `--style inline`: emit one `<style>` block in Markdown header with merged CSS.
-- `--style external`: write CSS files to `results/<book_slug>/styles/...` and emit `<link>` tags.
+- `--css inline`: emit one `<style>` block in Markdown header with merged CSS.
+- `--css external`: write CSS files to `results/<book_slug>/styles/...` and emit `<link>` tags.
 
 Notes:
 
@@ -198,8 +198,8 @@ Common controls used by both implementations:
 - `--input`
 - `--output`
 - `--media`
-- `--markdown-mode plain|rich`
-- `--style inline|external`
+- `--format plain|rich`
+- `--css inline|external`
 - `--split-chapters`
 - `--chapter-fallback off|auto|force`
 - `--notes-mode inline|chapter-end|global`
@@ -268,7 +268,7 @@ for boundary in boundaries:
   section_text = join(chunks)
   emit_section(boundary.label, section_text)
 
-emit_css(mode, style_mode, css_collector)
+emit_css(mode, css_mode, css_collector)
 write_output(single_or_split)
 rewrite_internal_links()
 emit_manifest_and_report_if_enabled()

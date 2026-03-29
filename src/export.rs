@@ -161,8 +161,8 @@ pub(super) fn write_manifest_export(
             "media": extracted_media.keys().collect::<Vec<_>>(),
         },
         "build": {
-            "markdown_mode": format!("{:?}", options.markdown_mode),
-            "style": format!("{:?}", options.style),
+            "format": format!("{:?}", options.format),
+            "css": format!("{:?}", options.css),
             "split_chapters": options.split_chapters,
             "chapter_fallback": format!("{:?}", options.chapter_fallback),
             "notes_mode": format!("{:?}", options.notes_mode),
