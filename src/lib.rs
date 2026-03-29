@@ -9,22 +9,24 @@ use walkdir::WalkDir;
 use kuchiki::NodeRef;
 
 mod collect;
+mod dom;
 mod export;
 mod heading;
 mod postprocess;
 mod render;
-pub mod runtime;
+pub mod render_ir;
 
 use collect::{
     collect_image_hrefs, collect_media_hrefs, collect_readable_spine_docs, collect_toc_entries,
     load_content,
 };
+use dom::collect_css;
 use export::{write_manifest_export, write_markdown_outputs, write_quality_report};
 use heading::{detect_heading_candidates, prettify_section_name};
 use postprocess::{cleanup_toc_entries, postprocess_sections};
 use render::{
-    build_style_header, collect_css, extract_image, extract_media_file,
-    render_partial_with_anchors, resolve_and_extract_image,
+    build_style_header, extract_image, extract_media_file, render_partial_with_anchors,
+    resolve_and_extract_image,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]

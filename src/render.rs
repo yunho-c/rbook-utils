@@ -5,40 +5,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
+use super::dom::{collect_anchors_from_nodes, slice_content_nodes};
 use super::{
     COMPLEX_HTML_TAGS, ContentDoc, CssMode, FormatMode, decode_path, is_external, resolve_href,
 };
-
-pub(super) fn collect_css(
-    content: &ContentDoc,
-    base_href: &str,
-    css_hrefs: &mut HashSet<String>,
-    inline_styles: &mut Vec<String>,
-) {
-    if let Ok(head) = content.document.select_first("head") {
-        let node = head.as_node();
-        if let Ok(links) = node.select("link[rel~='stylesheet']") {
-            for link in links {
-                let attrs = link.attributes.borrow();
-                if let Some(href) = attrs.get("href") {
-                    if is_external(href) {
-                        continue;
-                    }
-                    let resolved = resolve_href(base_href, href);
-                    css_hrefs.insert(resolved);
-                }
-            }
-        }
-        if let Ok(styles) = node.select("style") {
-            for style_node in styles {
-                let text = style_node.text_contents();
-                if !text.trim().is_empty() {
-                    inline_styles.push(text);
-                }
-            }
-        }
-    }
-}
 
 pub(super) fn build_style_header(
     epub: &Epub,
@@ -109,97 +79,14 @@ pub(super) fn render_partial_with_anchors(
             collect_anchors_from_content(content),
         );
     }
-    let body = match content.document.select_first("body") {
-        Ok(node) => node.as_node().clone(),
-        Err(_) => return (None, Vec::new()),
-    };
-    let children: Vec<NodeRef> = body.children().collect();
-    if children.is_empty() {
+    let nodes = slice_content_nodes(content, start_fragment, end_fragment);
+    if nodes.is_empty() {
         return (None, Vec::new());
     }
-    let mut start_idx = 0usize;
-    if let Some(fragment) = start_fragment {
-        let Some(anchor) = find_anchor(&content.document, fragment) else {
-            return (None, Vec::new());
-        };
-        let Some(top) = top_level_body_child(&body, &anchor) else {
-            return (None, Vec::new());
-        };
-        let Some(idx) = child_index(&children, &top) else {
-            return (None, Vec::new());
-        };
-        start_idx = idx;
-    }
-    let mut end_idx = children.len();
-    if let Some(fragment) = end_fragment {
-        if let Some(anchor) = find_anchor(&content.document, fragment) {
-            if let Some(top) = top_level_body_child(&body, &anchor) {
-                if let Some(idx) = child_index(&children, &top) {
-                    if idx > start_idx {
-                        end_idx = idx;
-                    }
-                }
-            }
-        }
-    }
-    if start_idx >= end_idx {
-        return (None, Vec::new());
-    }
-    let nodes = &children[start_idx..end_idx];
     (
-        render_nodes_for_mode(nodes, content, format, image_resolver),
-        collect_anchors_from_nodes(nodes),
+        render_nodes_for_mode(&nodes, content, format, image_resolver),
+        collect_anchors_from_nodes(&nodes),
     )
-}
-
-pub(super) fn slice_content_nodes(
-    content: &ContentDoc,
-    start_fragment: Option<&str>,
-    end_fragment: Option<&str>,
-) -> Vec<NodeRef> {
-    let Ok(body) = content.document.select_first("body") else {
-        return Vec::new();
-    };
-    let body = body.as_node().clone();
-    let children: Vec<NodeRef> = body.children().collect();
-    if children.is_empty() {
-        return Vec::new();
-    }
-    if start_fragment.is_none() && end_fragment.is_none() {
-        return children;
-    }
-
-    let mut start_idx = 0usize;
-    if let Some(fragment) = start_fragment {
-        let Some(anchor) = find_anchor(&content.document, fragment) else {
-            return Vec::new();
-        };
-        let Some(top) = top_level_body_child(&body, &anchor) else {
-            return Vec::new();
-        };
-        let Some(idx) = child_index(&children, &top) else {
-            return Vec::new();
-        };
-        start_idx = idx;
-    }
-
-    let mut end_idx = children.len();
-    if let Some(fragment) = end_fragment {
-        if let Some(anchor) = find_anchor(&content.document, fragment) {
-            if let Some(top) = top_level_body_child(&body, &anchor) {
-                if let Some(idx) = child_index(&children, &top) {
-                    if idx > start_idx {
-                        end_idx = idx;
-                    }
-                }
-            }
-        }
-    }
-
-    if start_idx >= end_idx {
-        return Vec::new();
-    }
-    children[start_idx..end_idx].to_vec()
 }
 
 pub(super) fn resolve_and_extract_image(
@@ -303,41 +190,8 @@ fn render_full_content(
     }
 }
 
-pub(super) fn collect_anchors_from_nodes(nodes: &[NodeRef]) -> Vec<String> {
-    let mut anchors: HashSet<String> = HashSet::new();
-    for node in nodes {
-        if let Ok(matches) = node.select("[id]") {
-            for n in matches {
-                let attrs = n.attributes.borrow();
-                if let Some(id) = attrs.get("id") {
-                    if !id.trim().is_empty() {
-                        anchors.insert(id.trim().to_string());
-                    }
-                }
-            }
-        }
-        if let Ok(matches) = node.select("a[name]") {
-            for n in matches {
-                let attrs = n.attributes.borrow();
-                if let Some(name) = attrs.get("name") {
-                    if !name.trim().is_empty() {
-                        anchors.insert(name.trim().to_string());
-                    }
-                }
-            }
-        }
-    }
-    let mut values: Vec<String> = anchors.into_iter().collect();
-    values.sort();
-    values
-}
-
 fn collect_anchors_from_content(content: &ContentDoc) -> Vec<String> {
-    let Ok(body) = content.document.select_first("body") else {
-        return Vec::new();
-    };
-    let nodes: Vec<NodeRef> = body.as_node().children().collect();
-    collect_anchors_from_nodes(&nodes)
+    collect_anchors_from_nodes(&slice_content_nodes(content, None, None))
 }
 
 fn render_nodes_for_mode(
@@ -407,21 +261,6 @@ fn render_nodes_rich(
     chunks.join("\n\n")
 }
 
-fn top_level_body_child(body: &NodeRef, node: &NodeRef) -> Option<NodeRef> {
-    let mut current = node.clone();
-    loop {
-        let parent = current.parent()?;
-        if parent == *body {
-            return Some(current);
-        }
-        current = parent;
-    }
-}
-
-fn child_index(children: &[NodeRef], target: &NodeRef) -> Option<usize> {
-    children.iter().position(|child| child == target)
-}
-
 fn render_plain(
     node: &NodeRef,
     content: &ContentDoc,
@@ -482,30 +321,6 @@ fn rewrite_images(
             }
         }
     }
-}
-
-fn find_anchor(document: &NodeRef, fragment: &str) -> Option<NodeRef> {
-    if let Ok(nodes) = document.select("[id]") {
-        for node in nodes {
-            let attrs = node.attributes.borrow();
-            if let Some(id) = attrs.get("id") {
-                if id == fragment {
-                    return Some(node.as_node().clone());
-                }
-            }
-        }
-    }
-    if let Ok(nodes) = document.select("a[name]") {
-        for node in nodes {
-            let attrs = node.attributes.borrow();
-            if let Some(name) = attrs.get("name") {
-                if name == fragment {
-                    return Some(node.as_node().clone());
-                }
-            }
-        }
-    }
-    None
 }
 
 fn element_name(node: &NodeRef) -> Option<&str> {
