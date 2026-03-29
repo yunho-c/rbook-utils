@@ -14,7 +14,6 @@ use super::{normalize_space, resolve_href, toc_degeneracy_stats, ContentDoc, Nav
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeParsedEpubBook {
     pub metadata: RuntimeEpubMetadata,
-    pub toc: Vec<RuntimeTocEntry>,
     pub cover_image: Option<Vec<u8>>,
     pub sections: Vec<RuntimeSection>,
 }
@@ -27,12 +26,6 @@ pub struct RuntimeEpubMetadata {
     pub identifier: Option<String>,
     pub publisher: Option<String>,
     pub description: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct RuntimeTocEntry {
-    pub title: String,
-    pub href: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -165,13 +158,6 @@ fn parse_epub_runtime_from_book(epub: &Epub) -> Result<RuntimeParsedEpubBook> {
 
     let toc_entries_raw = collect_toc_entries(epub);
     let (toc_entries, _) = cleanup_toc_entries(toc_entries_raw, NavCleanupMode::Auto);
-    let toc = toc_entries
-        .iter()
-        .map(|entry| RuntimeTocEntry {
-            title: entry.title_or_fallback(),
-            href: runtime_toc_href(entry),
-        })
-        .collect();
 
     let sections = plan_sections(epub, &toc_entries)?
         .into_iter()
@@ -180,7 +166,6 @@ fn parse_epub_runtime_from_book(epub: &Epub) -> Result<RuntimeParsedEpubBook> {
 
     Ok(RuntimeParsedEpubBook {
         metadata,
-        toc,
         cover_image: epub.manifest().cover_image().and_then(|cover| cover.read_bytes().ok()),
         sections,
     })
@@ -619,15 +604,6 @@ fn normalize_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn runtime_toc_href(entry: &TocEntryInfo) -> String {
-    let fragment = entry.fragment.clone().unwrap_or_default();
-    if fragment.is_empty() {
-        entry.href_path.clone()
-    } else {
-        format!("{}#{fragment}", entry.href_path)
-    }
-}
-
 fn normalize_resource_href(href: &str) -> String {
     let trimmed = href.trim();
     if trimmed.is_empty() {
@@ -861,7 +837,6 @@ mod tests {
         let book = parse_epub_runtime(&fixture("Alice's Adventures in Wonderland.epub"))
             .expect("parse alice");
         assert!(!book.sections.is_empty());
-        assert!(!book.toc.is_empty());
         assert!(!book.sections[0].document.blocks.is_empty());
         assert!(book
             .sections
