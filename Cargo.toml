@@ -6,7 +6,7 @@ edition = "2024"
 description = """
 A high-level wrapper over `rbook` for easy ebook parsing/conversion/rendering
 """
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/yunho-c/rbook-utils"
 homepage = "https://yunho-c.github.io/rbook"
 documentation = "https://docs.rs/rbook-utils"

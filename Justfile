@@ -1,9 +1,8 @@
-manifest := "rbook-utils/Cargo.toml"
-input_dir := "assets"
-output_dir := "rbook-utils/results"
+input := "assets"
+output := "results"
 
 rbook-utils-convert-plain:
-    cargo run --manifest-path {{manifest}} -- --input-dir {{input_dir}} --output-dir {{output_dir}}
+    cargo run -- --input {{input}} --output {{output}}
 
 rbook-utils-convert-rich:
-    cargo run --manifest-path {{manifest}} -- --input-dir {{input_dir}} --output-dir {{output_dir}} --markdown-mode rich --style inline --media-all --split-chapters
+    cargo run -- --input {{input}} --output {{output}} --markdown-mode rich --style inline --media-all --split-chapters
