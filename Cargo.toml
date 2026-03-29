@@ -14,6 +14,12 @@ readme = "README.md"
 categories = ["parser-implementations"]
 keywords = ["ebook", "epub", "parser", "markdown", "cli"]
 
+# Ignore these files and folders when packaging
+exclude = [
+    "assets/*",
+    ".github/",
+]
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
