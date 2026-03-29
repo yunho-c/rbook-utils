@@ -1,4 +1,4 @@
-# EPUB Parsing Gold Standard
+# EPUB Parsing Workflow
 
 This document defines the complete parsing process used in this repository, independent of language/runtime. It is meant to be the source of truth for reproducing the same quality in another platform (for example, a mobile app).
 
@@ -191,7 +191,7 @@ Post-processing:
   - if image extraction fails, keep original `src` so content is not lost.
 - Keep conversion running per book; report failures without crashing whole batch.
 
-## 10) Current CLI surface (gold standard behavior)
+## 10) Current CLI surface/behavior
 
 Common controls used by both implementations:
 
