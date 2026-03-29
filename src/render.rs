@@ -152,6 +152,56 @@ pub(super) fn render_partial_with_anchors(
     )
 }
 
+pub(super) fn slice_content_nodes(
+    content: &ContentDoc,
+    start_fragment: Option<&str>,
+    end_fragment: Option<&str>,
+) -> Vec<NodeRef> {
+    let Ok(body) = content.document.select_first("body") else {
+        return Vec::new();
+    };
+    let body = body.as_node().clone();
+    let children: Vec<NodeRef> = body.children().collect();
+    if children.is_empty() {
+        return Vec::new();
+    }
+    if start_fragment.is_none() && end_fragment.is_none() {
+        return children;
+    }
+
+    let mut start_idx = 0usize;
+    if let Some(fragment) = start_fragment {
+        let Some(anchor) = find_anchor(&content.document, fragment) else {
+            return Vec::new();
+        };
+        let Some(top) = top_level_body_child(&body, &anchor) else {
+            return Vec::new();
+        };
+        let Some(idx) = child_index(&children, &top) else {
+            return Vec::new();
+        };
+        start_idx = idx;
+    }
+
+    let mut end_idx = children.len();
+    if let Some(fragment) = end_fragment {
+        if let Some(anchor) = find_anchor(&content.document, fragment) {
+            if let Some(top) = top_level_body_child(&body, &anchor) {
+                if let Some(idx) = child_index(&children, &top) {
+                    if idx > start_idx {
+                        end_idx = idx;
+                    }
+                }
+            }
+        }
+    }
+
+    if start_idx >= end_idx {
+        return Vec::new();
+    }
+    children[start_idx..end_idx].to_vec()
+}
+
 pub(super) fn resolve_and_extract_image(
     epub: &Epub,
     src: &str,
@@ -253,7 +303,7 @@ fn render_full_content(
     }
 }
 
-fn collect_anchors_from_nodes(nodes: &[NodeRef]) -> Vec<String> {
+pub(super) fn collect_anchors_from_nodes(nodes: &[NodeRef]) -> Vec<String> {
     let mut anchors: HashSet<String> = HashSet::new();
     for node in nodes {
         if let Ok(matches) = node.select("[id]") {

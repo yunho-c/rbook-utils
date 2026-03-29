@@ -13,6 +13,7 @@ mod export;
 mod heading;
 mod postprocess;
 mod render;
+pub mod runtime;
 
 use collect::{
     collect_image_hrefs, collect_media_hrefs, collect_readable_spine_docs, collect_toc_entries,
